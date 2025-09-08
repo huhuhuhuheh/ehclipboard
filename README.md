@@ -1,7 +1,12 @@
 <div align="center">
   <img width="64" height="64" alt="eh's clipboard Icon" src="https://github.com/user-attachments/assets/eef0b081-0c8f-49b9-9691-29660199aa82" />
   <h1>Eh's clipboard</h1>
-  <i>Icon by <a href="https://fonts.google.com/icons">Google Fonts</a></i>
+  <i>Icon by <a href="https://fonts.google.com/icons">Google Fonts</a></i><p>
+    
+  </p>
+<a href="https://github.com/huhuhuhuheh/ehclipboard/releases">
+  <img src="https://img.shields.io/github/v/release/huhuhuhuheh/ehclipboard" alt="Latest Release">
+</a>
 </div>
 
 <br>
@@ -17,4 +22,7 @@ I don't need to explain, just grab python and then install the things
 ```
 pip install pyperclip pystray Pillow
 ```
+
+<i>Note: this does not work on linux, this is windows only, i will not make a linux port otherwise someone does it</i>
+
 </div>
