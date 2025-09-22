@@ -10,7 +10,7 @@
   <h2>Where to install</h2>
   <p>Either one you can grab it from the <a href="https://github.com/huhuhuhuheh/ehclipboard/releases">releases</a> tab</p>
   <p>or if you really want, you can well uhh install from your terminal i guess</p>
-<i>Until it is removed, winget may take a while, they just approved it minutes ago, on choco i guess you can install it anyways, tho it is "stayed" as unlisted until a human approves (likely it will not) or idk, see the thing <a href="https://community.chocolatey.org/packages/ehclipboard" target="_blank">here</a> i guess </i>
+<i>Note: on choco it is like at unlisted until a human approves (likely it will not) or idk, see the thing <a href="https://community.chocolatey.org/packages/ehclipboard" target="_blank">here</a> i guess </i>
 <table>
   <tr>
     <td align="center">
