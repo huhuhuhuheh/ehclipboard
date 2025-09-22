@@ -5,8 +5,26 @@
     
   </p>
 <a href="https://github.com/huhuhuhuheh/ehclipboard/releases">
-  <img src="https://img.shields.io/github/v/release/huhuhuhuheh/ehclipboard" alt="Latest Release">
-</a>
+  <img src="https://img.shields.io/github/v/release/huhuhuhuheh/ehclipboard" alt="Latest Release"></a>
+    <a href="#"><img alt="winget package" src="https://img.shields.io/winget/v/Eh.clipboard?label=winget"></a>
+  <h2>Where to install</h2>
+  <p>Either one you can grab it from the <a href="https://github.com/huhuhuhuheh/ehclipboard/releases">releases</a> tab</p>
+  <p>or if you really want, you can well uhh install from your terminal i guess</p>
+<i>Until it is removed, winget may take a while, they just approved it minutes ago, on choco i guess you can install it anyways, tho it is "stayed" as unlisted until a human approves (likely it will not) or idk, see the thing <a href="https://community.chocolatey.org/packages/ehclipboard">here</a> i guess </i>
+<table>
+  <tr>
+    <td align="center">
+      <strong>Winget</strong>
+      <pre><code>winget install Eh.clipboard</code></pre>
+    </td>
+    <td align="center">
+      <strong>Chocolatey</strong>
+      <pre><code>choco install ehclipboard</code></pre>
+    </td>
+  </tr>
+</table>
+
+<p>Or you can run from the Python script itself</p>
 </div>
 
 <br>
