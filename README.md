@@ -17,10 +17,6 @@
       <strong>Winget</strong>
       <pre><code>winget install Eh.clipboard</code></pre>
     </td>
-    <td align="center">
-      <strong>Chocolatey</strong>
-      <pre><code>choco install ehclipboard</code></pre>
-    </td>
   </tr>
 </table>
 
@@ -31,14 +27,14 @@
 
 
 <div align="center">
-  <p>Simple program on a single python file that alerts you what has been copied, because i was bored and i did this lmao, but also to change their things (Kinda how android tells smt has been copied to the clipboard)</p>
+  <p>Simple program on a python file that alerts you what has been copied, because i was bored and i did this lmao, but also to change their things (Kinda how android tells smt has been copied to the clipboard)</p>
   <img width="398" height="126" alt="eh's clipboard Screenshot" src="https://github.com/user-attachments/assets/e7694d66-9ce9-431b-b519-c18704fe82c8" />
 <h1>Compiling</h1>
 
 I don't need to explain, just grab python and then install the things
 
 ```
-pip install pyperclip pystray Pillow
+pip install pyperclip pystray Pillow PySide6
 ```
 
 <i>Note: this does not work on linux, this is windows only, i will not make a linux port otherwise someone does it</i>

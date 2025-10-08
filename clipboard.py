@@ -15,7 +15,9 @@ import configparser
 import os
 import webbrowser
 import traceback
-import shutil
+import queue
+import about_qt
+import subprocess
 
 # --- Core Application Paths ---
 # Use AppData for user-writable configuration and custom files.
@@ -53,6 +55,7 @@ screen_width = 0
 screen_height = 0
 app_icon = None
 app_photo_icon = None
+UPDATE_AND_QUIT_FLAG = threading.Event()
 
 def show_error_messagebox(title, message):
     """Displays a Tkinter error messagebox, ensuring it's top-level and has the app icon."""
@@ -272,7 +275,24 @@ def load_animation_sets_from_folder():
 LANGS = {}
 DEFAULT_MESSAGES = {'CopiedSuffix': 'has been copied to the clipboard', 'PreviewText': '"Preview..." has been copied to the clipboard'}
 MESSAGES = DEFAULT_MESSAGES.copy()
-DEFAULT_UI = {'SetPosition': 'Set Position', 'Style': 'Style', 'AnimationIn': 'Animation In', 'AnimationOut': 'Animation Out', 'AnimationSet': 'Animation Set', 'Language': 'Language', 'EditSettings': "Edit Program's Settings", 'EditConfig': 'Edit config.ini', 'OpenStyles': 'Open Styles Folder', 'OpenLangs': 'Open Languages Folder', 'OpenGlobal': 'Open Global Folder', 'OpenAnims': 'Open Animations Folder', 'Quit': 'Quit', 'About': 'About', 'SavePosition': 'Save Position', 'Cancel': 'Cancel', 'PositionerInstructions': 'Click and drag to select the notification area\nPress Ctrl+Shift+R to reset to default'}
+DEFAULT_UI = {
+    'SetPosition': 'Set Position', 'Style': 'Style', 'AnimationIn': 'Animation In', 'AnimationOut': 'Animation Out', 
+    'AnimationSet': 'Animation Set', 'Language': 'Language', 'EditSettings': "Edit Program's Settings", 
+    'EditConfig': 'Edit config.ini', 'OpenStyles': 'Open Styles Folder', 'OpenLangs': 'Open Languages Folder', 
+    'OpenGlobal': 'Open Global Folder', 'OpenAnims': 'Open Animations Folder', 'Quit': 'Quit', 'About': 'About', 
+    'SavePosition': 'Save Position', 'Cancel': 'Cancel', 
+    'PositionerInstructions': 'Click and drag to select the notification area\nPress Ctrl+Shift+R to reset to default',
+    'CheckForUpdates': 'Check for Updates', 'AboutWindowTitle': "About eh's Clipboard",
+    'AboutTab': 'About', 'UpdatesTab': 'Updates', 'LicenseTab': 'License', 'UpdateNow': 'Update Now',
+    'ViewOnGitHub': 'View Release on GitHub', 'CheckingForUpdates': 'Checking for updates...',
+    'UpdateInitialPrompt': "Press 'Check for Updates' to see if a new version is available.",
+    'UpdateNewVersion': 'New version available: {latest_tag} (you are {behind} version(s) behind, running {current_version})',
+    'UpdateLatest': 'You are running the latest version!', 'UpdateFailed': "Failed to fetch update: {error}",
+    'UpdateNoReleases': 'No releases found.', 'DownloadPreparing': 'Preparing download...',
+    'DownloadStatus': 'Downloading... {downloaded} / {total} ({speed}, ETA: {eta})',
+    'DownloadComplete': 'Download complete. Starting installer...',
+    'DownloadInstallerFailed': 'Failed to run installer: {error}', 'DownloadFailedGeneric': 'Download failed: {error}'
+}
 UI = DEFAULT_UI.copy()
 
 def parse_lang_display_from_file(path):
@@ -430,8 +450,10 @@ def show_toast(text):
     measured = font_obj.measure(f"{short_text} {MESSAGES.get('CopiedSuffix')}")
     w_calc = int(min(min(int(screen_width * 0.5), 480), max(260, measured + 40)))
     wraplen = max(80, w_calc - 40)
-
-    label = tk.Label(content_frame, text=f"{short_text} {MESSAGES.get('CopiedSuffix')}", bg=style_look['bg'], fg=style_look['fg'], font=style_look['font'], wraplength=wraplen, justify='left', anchor='w')
+    
+    clean_style = style_look.copy()
+    clean_style.pop('border', None)
+    label = tk.Label(content_frame, text=f"{short_text} {MESSAGES.get('CopiedSuffix')}", **clean_style, wraplength=wraplen, justify='left', anchor='w')
     label.pack(padx=10, pady=5, fill=tk.X)
     toast.update_idletasks()
     w_small, h_small = toast.winfo_reqwidth(), toast.winfo_reqheight()
@@ -444,7 +466,7 @@ def show_toast(text):
         hover_state['is_expanded'] = False
         global fade_out_job
         for widget in content_frame.winfo_children(): widget.destroy()
-        label_short = tk.Label(content_frame, text=f"{short_text} {MESSAGES.get('CopiedSuffix')}", bg=style_look['bg'], fg=style_look['fg'], font=style_look['font'], wraplength=wraplen, justify='left', anchor='w')
+        label_short = tk.Label(content_frame, text=f"{short_text} {MESSAGES.get('CopiedSuffix')}", **clean_style, wraplength=wraplen, justify='left', anchor='w')
         label_short.pack(padx=10, pady=5, fill=tk.X)
         animate_resize(toast, w_small, h_small)
         x_pos, y_pos = calculate_position(w_small, h_small)
@@ -518,6 +540,18 @@ def apply_style(style_name):
     save_config()
     update_systray_menu()
 
+def open_about_threaded(ui_dict):
+    if any(t.name == 'QtAboutThread' and t.is_alive() for t in threading.enumerate()):
+        return
+            
+    about_thread = threading.Thread(
+        target=about_qt.show_about_dialog, 
+        args=(ui_dict, UPDATE_AND_QUIT_FLAG), 
+        name='QtAboutThread', 
+        daemon=True
+    )
+    about_thread.start()
+
 def update_systray_menu():
     global app_icon
     styles_dir = os.path.join(APP_DATA_PATH, 'Styles')
@@ -547,7 +581,6 @@ def update_systray_menu():
             def create_action(a): return lambda icon, item: (CURRENT_SETTINGS.update(a), save_config(), update_systray_menu())
             yield item(name, create_action(anim_set), checked=lambda item, a=anim_set: CURRENT_SETTINGS['animation_in'] == a['animation_in'] and CURRENT_SETTINGS['animation_out'] == a['animation_out'], radio=True)
 
-    def open_about(icon, item): webbrowser.open('https://github.com/huhuhuhuheh/ehclipboard')
     settings_menu = [item(UI.get('EditConfig'), lambda: open_path(CONFIG_FILE)), pystray.Menu.SEPARATOR, item(UI.get('OpenStyles'), lambda: open_path(styles_dir)), item(UI.get('OpenLangs'), lambda: open_path(lang_dir)), item(UI.get('OpenAnims'), lambda: open_path(anim_dir)), item(UI.get('OpenGlobal'), lambda: open_path(APP_DATA_PATH))]
     
     menu_items = (
@@ -560,7 +593,7 @@ def update_systray_menu():
         pystray.Menu.SEPARATOR,
         item(UI.get('EditSettings'), pystray.Menu(*settings_menu)),
         pystray.Menu.SEPARATOR,
-        item(UI.get('About'), open_about),
+        item(UI.get('About'), lambda: open_about_threaded(UI)),
         item(UI.get('Quit'), lambda: (app_icon.stop(), root.destroy())),
     )
     if app_icon: app_icon.menu = pystray.Menu(*menu_items)
@@ -641,6 +674,15 @@ def main():
     
     tray_image = create_image_for_tray()
     icon = pystray.Icon("ehs_clipboard", tray_image, "eh's clipboard")
+    
+    def check_quit_flag():
+        if UPDATE_AND_QUIT_FLAG.is_set():
+            app_icon.stop()
+            root.destroy()
+        else:
+            root.after(250, check_quit_flag)
+    
+    check_quit_flag()
     threading.Thread(target=lambda: icon.run(setup=setup_tray_and_monitoring), daemon=True).start()
     root.mainloop()
 
