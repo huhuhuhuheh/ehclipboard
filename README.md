@@ -43,7 +43,7 @@ After installing the listed depdencies, open a terminal and fork the project (Or
 git clone https://github.com/huhuhuhuheh/ehclipboard.git
 ```
 
-<i>Note: If you want to fork from a version in specific download the source code from that version on the releases tab and follow the depdencies instruction from that version</i>
+<i>Note: If you want to fork from a version in specific download the source code from that version on the <a href="https://github.com/huhuhuhuheh/ehclipboard/releases/">releases tab</a> and follow the depdencies instruction from that version</i>
 
 After forking the repo and then going to the directory, install the depdencies on your terminal before running:
 ```
