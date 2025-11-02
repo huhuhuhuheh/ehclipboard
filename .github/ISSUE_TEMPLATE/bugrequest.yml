@@ -3,7 +3,7 @@ title: Bug Request
 description: Bugs inside of the program
 projects: []
 labels:
-  - bug
+  - Bug
 body:
   - type: checkboxes
     id: checkboxes-0
