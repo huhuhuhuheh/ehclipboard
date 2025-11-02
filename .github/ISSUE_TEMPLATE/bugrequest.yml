@@ -49,3 +49,5 @@ body:
     id: textarea-4
     attributes:
       label: How do you replicate it?
+    validations:
+      required: true
