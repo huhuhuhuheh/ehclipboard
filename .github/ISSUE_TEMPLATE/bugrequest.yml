@@ -10,9 +10,9 @@ body:
     attributes:
       label: "Confirm The Following:"
       options:
-        - label: Is the
+        - label: Did you check the
             [issue](https://github.com/huhuhuhuheh/ehclipboard/issues?q=is%3Aissue%20state%3Aopen)
-            already opened before?
+            tab for any duplicates?
         - label: My issue is not revelant to the already
             [documented](https://github.com/huhuhuhuheh/ehclipboard/wiki/Errors-on-program)
             errors listed on the wiki
@@ -45,3 +45,7 @@ body:
       description: Please be precise on writting the issue, a screenshot helps
     validations:
       required: true
+  - type: textarea
+    id: textarea-4
+    attributes:
+      label: How do you replicate it?
