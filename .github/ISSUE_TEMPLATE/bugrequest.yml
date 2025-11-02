@@ -1,0 +1,47 @@
+name: Bug Request
+title: ""
+description: Bugs inside of the program
+projects: []
+labels:
+  - bug
+body:
+  - type: checkboxes
+    id: checkboxes-0
+    attributes:
+      label: "Confirm The Following:"
+      options:
+        - label: Is the
+            [issue](https://github.com/huhuhuhuheh/ehclipboard/issues?q=is%3Aissue%20state%3Aopen)
+            already opened before?
+        - label: My issue is not revelant to the already
+            [documented](https://github.com/huhuhuhuheh/ehclipboard/wiki/Errors-on-program)
+            errors listed on the wiki
+        - label: The issue is on the latest version of the program
+    validations:
+      required: true
+  - type: dropdown
+    id: dropdown-1
+    attributes:
+      label: What's your OS?
+      options:
+        - Windows 10
+        - Windows 11
+    validations:
+      required: true
+  - type: dropdown
+    id: dropdown-2
+    attributes:
+      label: Where is the program being run on where the issue happens?
+      options:
+        - On the Program Itself
+        - On the Python Script itself
+        - Both
+    validations:
+      required: true
+  - type: textarea
+    id: textarea-3
+    attributes:
+      label: Describe your issue
+      description: Please be precise on writting the issue, a screenshot helps
+    validations:
+      required: true
