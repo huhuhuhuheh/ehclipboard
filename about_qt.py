@@ -1,11 +1,14 @@
 import sys
 import base64
 import datetime
+import json
 import xml.etree.ElementTree as ET
 import tempfile
 import subprocess
 import os
 import webbrowser
+import traceback
+import ctypes
 from pathlib import Path
 from urllib.request import urlopen
 from PySide6.QtWidgets import (
@@ -20,9 +23,23 @@ ICON_BASE64 = '''iVBORw0KGgoAAAANSUhEUgAAADQAAAA0CAYAAADFeBvrAAACZElEQVRoQ+2Zv4v
 
 STUPID_REPO = "https://github.com/huhuhuhuheh/ehclipboard"
 UPDATE_CACHE_FILE = Path.home() / ".ehclipboard_update.json"
+
+def is_msix_package():
+    try:
+        length = ctypes.c_uint32(0)
+        result = ctypes.windll.kernel32.GetCurrentPackageFullName(ctypes.byref(length), None)
+        return result != 15700
+    except Exception:
+        return False
+
+def cache_icon():
+    pass
+
+def get_cached_or_fallback_icon():
+    return ICON_BASE64
 LICENSE_TEXT = """MIT License
 
-Copyright (c) 2025 eh
+Copyright (c) 2026 eh
 
 Permission is hereby granted, free of charge, to any person obtaining a copy
 of this software and associated documentation files (the "Software"), to deal
@@ -47,7 +64,10 @@ def get_current_version():
     return __version__
 
 def record_update_check():
-    with open(UPDATE_CACHE_FILE, "w", encoding="utf-8") as f: f.write(f'{{"last_check": "{datetime.datetime.now().isoformat()}"}}')
+    import json
+    data = {"last_check": datetime.datetime.now().isoformat()}
+    with open(UPDATE_CACHE_FILE, "w", encoding="utf-8") as f:
+        json.dump(data, f)
 
 def should_check_update():
     if not UPDATE_CACHE_FILE.exists(): return True
@@ -78,9 +98,21 @@ class UpdateFetcher(QThread):
     def run(self):
         result = {}
         try:
-            with urlopen(f"https://github.com/huhuhuhuheh/ehclipboard/releases.atom") as response:
-                xml_data = response.read()
-            root = ET.fromstring(xml_data)
+            try:
+                with urlopen(f"https://github.com/huhuhuhuheh/ehclipboard/releases.atom", timeout=10) as response:
+                    xml_data = response.read()
+            except Exception as e:
+                result["error"] = f"Network error: {str(e)}"
+                self.finished.emit(result)
+                return
+            
+            try:
+                root = ET.fromstring(xml_data)
+            except Exception as e:
+                result["error"] = f"Failed to parse releases: {str(e)}"
+                self.finished.emit(result)
+                return
+            
             ns = {"atom": "http://www.w3.org/2005/Atom"}
             entries = root.findall("atom:entry", ns)
             if not entries:
@@ -89,21 +121,31 @@ class UpdateFetcher(QThread):
                 return
 
             latest = entries[0]
-            title = latest.find("atom:title", ns).text
-            result["latest_tag"] = title.strip()
-            result["release_url"] = latest.find("atom:link", ns).attrib.get("href", STUPID_REPO)
-            result["body"] = (latest.find("atom:content", ns).text or "").strip()
+            title = latest.find("atom:title", ns)
+            if title is None:
+                result["error"] = "Invalid release format."
+                self.finished.emit(result)
+                return
+            
+            result["latest_tag"] = title.text.strip()
+            link = latest.find("atom:link", ns)
+            result["release_url"] = link.attrib.get("href", STUPID_REPO) if link is not None else STUPID_REPO
+            content = latest.find("atom:content", ns)
+            result["body"] = (content.text or "").strip() if content is not None else ""
 
             behind_count = 0
             current_version_clean = get_current_version().lstrip('v')
             for entry in entries:
-                tag = entry.find("atom:title", ns).text.strip()
+                tag_elem = entry.find("atom:title", ns)
+                if tag_elem is None:
+                    continue
+                tag = tag_elem.text.strip()
                 if tag.lstrip('v') == current_version_clean:
                     break
                 behind_count += 1
             result["behind"] = behind_count
         except Exception as e:
-            result["error"] = str(e)
+            result["error"] = f"Unexpected error: {str(e)}"
         self.finished.emit(result)
 
 class InstallerDownloader(QThread):
@@ -205,20 +247,37 @@ class AboutDialog(QDialog):
     def create_update_tab(self):
         update_tab = QWidget()
         layout = QVBoxLayout(update_tab)
-        self.update_info = QLabel(self.ui.get('UpdateInitialPrompt', ''))
-        self.update_info.setAlignment(Qt.AlignCenter)
-        self.update_button = QPushButton(self.ui.get('CheckForUpdates', 'Check for Updates'))
-        self.progress = QProgressBar(); self.progress.setRange(0, 100); self.progress.hide()
-        self.notes = QTextEdit(); self.notes.setReadOnly(True); self.notes.hide()
-        self.btn_update_now = QPushButton(self.ui.get('UpdateNow', 'Update Now')); self.btn_update_now.hide()
-        self.btn_release_notes = QPushButton(self.ui.get('ViewOnGitHub', 'View on GitHub')); self.btn_release_notes.hide()
+        
+        if is_msix_package():
+            self.update_info = QLabel(self.ui.get('UpdateMSStoreMessage', 'Updates are automatically managed by the Microsoft Store'))
+            self.update_info.setAlignment(Qt.AlignCenter)
+            self.btn_store = QPushButton(self.ui.get('UpdateMSStoreButton', 'Open Store Updates'))
+            self.btn_store.clicked.connect(lambda: webbrowser.open('ms-windows-store://pdp/?productid=9MWGR59WHT00'))
+            layout.addStretch()
+            layout.addWidget(self.update_info)
+            layout.addWidget(self.btn_store)
+            layout.addStretch()
+            self.update_button = None
+            self.progress = None
+            self.notes = None
+            self.btn_update_now = None
+            self.btn_release_notes = None
+        else:
+            self.update_info = QLabel(self.ui.get('UpdateInitialPrompt', ''))
+            self.update_info.setAlignment(Qt.AlignCenter)
+            self.update_button = QPushButton(self.ui.get('CheckForUpdates', 'Check for Updates'))
+            self.progress = QProgressBar(); self.progress.setRange(0, 100); self.progress.hide()
+            self.notes = QTextEdit(); self.notes.setReadOnly(True); self.notes.hide()
+            self.btn_update_now = QPushButton(self.ui.get('UpdateNow', 'Update Now')); self.btn_update_now.hide()
+            self.btn_release_notes = QPushButton(self.ui.get('ViewOnGitHub', 'View on GitHub')); self.btn_release_notes.hide()
 
-        hbox_buttons = QHBoxLayout()
-        hbox_buttons.addWidget(self.btn_update_now); hbox_buttons.addWidget(self.btn_release_notes)
-        layout.addWidget(self.update_info); layout.addWidget(self.progress)
-        layout.addWidget(self.update_button); layout.addWidget(self.notes); layout.addLayout(hbox_buttons)
+            hbox_buttons = QHBoxLayout()
+            hbox_buttons.addWidget(self.btn_update_now); hbox_buttons.addWidget(self.btn_release_notes)
+            layout.addWidget(self.update_info); layout.addWidget(self.progress)
+            layout.addWidget(self.update_button); layout.addWidget(self.notes); layout.addLayout(hbox_buttons)
 
-        self.update_button.clicked.connect(self.start_update_check)
+            self.update_button.clicked.connect(self.start_update_check)
+        
         return update_tab
 
     def create_license_tab(self):
@@ -231,12 +290,17 @@ class AboutDialog(QDialog):
         return license_tab
 
     def start_update_check(self):
-        self.update_button.setEnabled(False)
-        self.update_info.setText(self.ui.get('CheckingForUpdates', '...'))
-        self.progress.show()
-        self._update_thread = UpdateFetcher()
-        self._update_thread.finished.connect(self.on_update_result)
-        self._update_thread.start()
+        try:
+            self.update_button.setEnabled(False)
+            self.update_info.setText(self.ui.get('CheckingForUpdates', '...'))
+            self.progress.show()
+            self._update_thread = UpdateFetcher()
+            self._update_thread.finished.connect(self.on_update_result)
+            self._update_thread.start()
+        except Exception as e:
+            self.update_button.setEnabled(True)
+            self.progress.hide()
+            self.update_info.setText(self.ui.get('UpdateFailed', 'Update check failed: {error}').format(error=str(e)))
 
     def on_update_result(self, result):
         self.progress.hide()
@@ -270,26 +334,30 @@ class AboutDialog(QDialog):
         self.btn_update_now.clicked.connect(lambda: self.start_installer_download(installer_url)); self.btn_update_now.show()
 
     def start_installer_download(self, url):
-        self.setWindowFlags(self.windowFlags() & ~Qt.WindowCloseButtonHint); self.show()
-        self.progress.show(); self.update_button.hide(); self.notes.hide()
-        self.btn_update_now.hide(); self.btn_release_notes.hide()
-        self.update_info.setText(self.ui.get('DownloadPreparing', '...'))
+        try:
+            self.setWindowFlags(self.windowFlags() & ~Qt.WindowCloseButtonHint); self.show()
+            self.progress.show(); self.update_button.hide(); self.notes.hide()
+            self.btn_update_now.hide(); self.btn_release_notes.hide()
+            self.update_info.setText(self.ui.get('DownloadPreparing', '...'))
 
-        self._installer_thread = InstallerDownloader(url, self.ui)
-        self._installer_thread.progress.connect(self.progress.setValue)
-        self._installer_thread.status.connect(self.update_info.setText)
-        self._installer_thread.finished.connect(self.on_installer_downloaded)
-        self._installer_thread.failed.connect(self.on_installer_failed)
-        self._installer_thread.start()
+            self._installer_thread = InstallerDownloader(url, self.ui)
+            self._installer_thread.progress.connect(self.progress.setValue)
+            self._installer_thread.status.connect(self.update_info.setText)
+            self._installer_thread.finished.connect(self.on_installer_downloaded)
+            self._installer_thread.failed.connect(self.on_installer_failed)
+            self._installer_thread.start()
+        except Exception as e:
+            self.update_info.setText(self.ui.get('DownloadFailedGeneric', 'Download failed: {error}').format(error=str(e)))
+            self.setWindowFlags(self.windowFlags() | Qt.WindowCloseButtonHint); self.show()
 
     def on_installer_downloaded(self, file_path):
         self.update_info.setText(self.ui.get('DownloadComplete', '...'))
         try:
             os.startfile(file_path)
-            self.quit_event.set()
         except Exception as e:
             self.update_info.setText(self.ui.get('DownloadInstallerFailed', '').format(error=e))
         finally:
+            self.quit_event.set()
             self.safe_close()
     
     def on_installer_failed(self, error_msg):
@@ -315,13 +383,42 @@ class AboutDialog(QDialog):
         self.safe_close()
 
 def show_about_dialog(ui_strings, quit_event):
-    app = QApplication.instance() or QApplication(sys.argv)
-    icon_data = base64.b64decode(ICON_BASE64)
-    pixmap_icon = QPixmap(); pixmap_icon.loadFromData(icon_data); icon = QIcon(pixmap_icon)
-    app.setWindowIcon(icon)
+    try:
+        app = QApplication.instance() or QApplication(sys.argv)
+        icon_b64 = get_cached_or_fallback_icon()
+        icon_data = base64.b64decode(icon_b64)
+        pixmap_icon = QPixmap()
+        if not pixmap_icon.loadFromData(icon_data):
+            raise ValueError("Failed to load icon from base64 data")
+        icon = QIcon(pixmap_icon)
+        cache_icon()
+        app.setWindowIcon(icon)
 
-    dialog = AboutDialog(icon, ui_strings, quit_event)
-    dialog.show()
-    dialog.raise_()
-    dialog.activateWindow()
-    app.exec()
+        dialog = AboutDialog(icon, ui_strings, quit_event)
+        dialog.show()
+        dialog.raise_()
+        dialog.activateWindow()
+        app.exec()
+    except Exception as e:
+        print(f"ERROR in show_about_dialog: {e}", file=sys.stderr)
+        traceback.print_exc(file=sys.stderr)
+
+if __name__ == '__main__':
+    try:
+        import threading
+        ui_dict = {}
+        quit_event = threading.Event()
+        
+        if len(sys.argv) > 1:
+            json_file = sys.argv[1]
+            try:
+                with open(json_file, 'r', encoding='utf-8') as f:
+                    ui_dict = json.load(f)
+            except Exception as e:
+                print(f"Warning: Could not load UI strings from {json_file}: {e}", file=sys.stderr)
+        
+        show_about_dialog(ui_dict, quit_event)
+    except Exception as e:
+        print(f"FATAL ERROR in about_qt.py main: {e}", file=sys.stderr)
+        traceback.print_exc(file=sys.stderr)
+        sys.exit(1)

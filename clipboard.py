@@ -10,6 +10,9 @@ from PIL import Image, ImageTk
 import tkinter.font as tkfont
 import sys
 import base64
+import ctypes
+import winreg
+from winotify import Notification, audio
 import io
 import configparser
 import os
@@ -19,9 +22,34 @@ import queue
 import about_qt
 import subprocess
 
+import ctypes
+from ctypes import wintypes
+
 # --- Core Application Paths ---
-# Use AppData for user-writable configuration and custom files.
+IS_MSIX = False
 APP_DATA_PATH = os.path.join(os.getenv('APPDATA'), "eh", "eh's Clipboard")
+APP_ID = "gay.eh.clipboard"
+
+try:
+    length = ctypes.c_uint32(0)
+    result = ctypes.windll.kernel32.GetCurrentPackageFullName(ctypes.byref(length), None)
+    
+    if result != 15700:
+        IS_MSIX = True
+        APP_ID = "Eh's Clipboard"
+        
+        length = ctypes.c_uint32(0)
+        ctypes.windll.kernel32.GetCurrentPackageFamilyName(ctypes.byref(length), None)
+        family_name_buffer = ctypes.create_unicode_buffer(length.value)
+        ctypes.windll.kernel32.GetCurrentPackageFamilyName(ctypes.byref(length), family_name_buffer)
+        package_family_name = family_name_buffer.value
+        
+        local_app_data = os.getenv('LOCALAPPDATA')
+        if local_app_data and package_family_name:
+            APP_DATA_PATH = os.path.join(local_app_data, "Packages", package_family_name, "LocalCache", "Roaming", "eh", "eh's Clipboard")
+except Exception:
+    pass
+
 CONFIG_FILE = os.path.join(APP_DATA_PATH, 'config.ini')
 
 # Determine the base path for bundled, read-only assets.
@@ -47,6 +75,63 @@ CURRENT_SETTINGS = {
     'pos_anchor': 'se',
     'language': 'en-US.ini',
 }
+
+APP_ID = "gay.eh.clipboard"
+FRIENDLY_NAME = "EhClipboard"
+DISPLAY_NAME = "Eh's Clipboard"
+
+def register_app_user_model_id():
+    try:
+        key = winreg.CreateKey(winreg.HKEY_CURRENT_USER, fr"Software\Classes\AppUserModelId\{APP_ID}")
+        winreg.SetValueEx(key, "DisplayName", 0, winreg.REG_SZ, DISPLAY_NAME)
+        icon_path = os.path.join(APP_DATA_PATH, 'icon.ico')
+        winreg.SetValueEx(key, "IconUri", 0, winreg.REG_SZ, icon_path)
+        winreg.CloseKey(key)
+    except Exception:
+        pass
+
+def get_app_display_name_from_registry():
+    try:
+        key = winreg.OpenKey(winreg.HKEY_CURRENT_USER, fr"Software\Classes\AppUserModelId\{APP_ID}")
+        display_name, _ = winreg.QueryValueEx(key, "DisplayName")
+        winreg.CloseKey(key)
+        return display_name
+    except Exception:
+        return DISPLAY_NAME
+
+def get_app_icon_uri_from_registry():
+    try:
+        key = winreg.OpenKey(winreg.HKEY_CURRENT_USER, fr"Software\Classes\AppUserModelId\{APP_ID}")
+        icon_uri, _ = winreg.QueryValueEx(key, "IconUri")
+        winreg.CloseKey(key)
+        return icon_uri
+    except Exception:
+        return None
+
+def find_icon_path():
+    appdata_icon = os.path.join(APP_DATA_PATH, 'icon.ico')
+    if os.path.exists(appdata_icon):
+        return appdata_icon
+    
+    if getattr(sys, 'frozen', False):
+        exe_dir = os.path.dirname(sys.executable)
+    else:
+        exe_dir = os.path.dirname(os.path.abspath(__file__))
+    exe_icon = os.path.join(exe_dir, 'icon.ico')
+    if os.path.exists(exe_icon):
+        return exe_icon
+    
+    registry_icon = get_app_icon_uri_from_registry()
+    if registry_icon and os.path.exists(registry_icon):
+        return registry_icon
+    
+    return None
+
+def set_app_user_model_id():
+    try:
+        ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(APP_ID)
+    except Exception:
+        pass
 
 last_text = ""
 toast = None
@@ -268,7 +353,28 @@ def load_animation_sets_from_folder():
                     if 'AnimationSet' in cp:
                         s = cp['AnimationSet']
                         if s.get('animation_in') in ANIMATIONS_IN and s.get('animation_out') in ANIMATIONS_OUT:
-                            ANIMATION_SETS[s.get('name', entry)] = {'animation_in': s.get('animation_in'), 'animation_out': s.get('animation_out')}
+                            name = s.get('name', entry)
+                            ANIMATION_SETS[name] = {'animation_in': s.get('animation_in'), 'animation_out': s.get('animation_out')}
+                            try:
+                                in_name = s.get('animation_in')
+                                out_name = s.get('animation_out')
+                                params = {}
+                                if 'in_offset_x' in s: params['in_offset_x'] = s.getint('in_offset_x')
+                                if 'in_offset_y' in s: params['in_offset_y'] = s.getint('in_offset_y')
+                                if 'out_offset_x' in s: params['out_offset_x'] = s.getint('out_offset_x')
+                                if 'out_offset_y' in s: params['out_offset_y'] = s.getint('out_offset_y')
+                                if params:
+                                    CUSTOM_ANIM_PARAMS[in_name] = {'in_offset_x': params.get('in_offset_x', 0), 'in_offset_y': params.get('in_offset_y', 0)}
+                                    CUSTOM_ANIM_PARAMS[out_name] = {'out_offset_x': params.get('out_offset_x', 0), 'out_offset_y': params.get('out_offset_y', 0)}
+                            except Exception:
+                                pass
+                            try:
+                                if 'In' in cp:
+                                    ANIMATION_SETS[name]['in_keyframes'] = dict(cp['In'])
+                                if 'Out' in cp:
+                                    ANIMATION_SETS[name]['out_keyframes'] = dict(cp['Out'])
+                            except Exception:
+                                pass
                 except Exception as e:
                     show_error_messagebox("Animation Set Loading Error", f"Failed to load animation set from '{cfg_path}'.\n\nError: {e}")
 
@@ -288,12 +394,18 @@ DEFAULT_UI = {
     'UpdateInitialPrompt': "Press 'Check for Updates' to see if a new version is available.",
     'UpdateNewVersion': 'New version available: {latest_tag} (you are {behind} version(s) behind, running {current_version})',
     'UpdateLatest': 'You are running the latest version!', 'UpdateFailed': "Failed to fetch update: {error}",
+    'UpdateMSStoreMessage': 'Updates are automatically managed by the Microsoft Store',
+    'UpdateMSStoreButton': 'Open Store Updates',
+    'FirstRunToastTitle': "eh's Clipboard",
+    'FirstRunToastMessage': "You're good to go, this program runs on the system tray, try copying something!",
     'UpdateNoReleases': 'No releases found.', 'DownloadPreparing': 'Preparing download...',
     'DownloadStatus': 'Downloading... {downloaded} / {total} ({speed}, ETA: {eta})',
     'DownloadComplete': 'Download complete. Starting installer...',
     'DownloadInstallerFailed': 'Failed to run installer: {error}', 'DownloadFailedGeneric': 'Download failed: {error}'
 }
 UI = DEFAULT_UI.copy()
+
+CUSTOM_ANIM_PARAMS = {}
 
 def parse_lang_display_from_file(path):
     try:
@@ -314,18 +426,37 @@ def load_languages():
             display = parse_lang_display_from_file(full)
             LANGS[fname] = display
 
+def set_os_language_on_first_run():
+    if IS_MSIX:
+        return
+    if CURRENT_SETTINGS['language'] != 'en-US.ini':
+        return
+    import locale
+    try:
+        os_lang_code = locale.getlocale()[0]
+        if os_lang_code:
+            os_lang_code = os_lang_code.replace('_', '-').lower()
+            lang_dir = os.path.join(APP_DATA_PATH, 'lang')
+            if os.path.exists(lang_dir):
+                for fname in os.listdir(lang_dir):
+                    if fname.lower().endswith('.ini'):
+                        fname_base = fname[:-4].lower()
+                        if fname_base == os_lang_code or fname_base.startswith(os_lang_code.split('-')[0]):
+                            CURRENT_SETTINGS['language'] = fname
+                            save_config()
+                            return
+    except Exception:
+        pass
+
 def ensure_default_files():
-    """Ensures all necessary files and folders exist in AppData, creating them on first run."""
     os.makedirs(APP_DATA_PATH, exist_ok=True)
 
     if not os.path.exists(CONFIG_FILE):
-        save_config() # Save the default config
+        save_config()
 
-    # Create default folders if they don't exist
     for folder in ['Styles', 'Animations', 'lang']:
         os.makedirs(os.path.join(APP_DATA_PATH, folder), exist_ok=True)
     
-    # Create default language file if it's missing in AppData
     en_path_dest = os.path.join(APP_DATA_PATH, 'lang', 'en-US.ini')
     if not os.path.exists(en_path_dest):
         try:
@@ -337,7 +468,6 @@ def ensure_default_files():
         except Exception as e:
             show_error_messagebox("File Creation Error", f"Could not create default language file.\n\nError: {e}")
     
-    # Create default style files if they are missing
     for style_name, content in [
         ('Default Dark', '[Style]\nname = Default Dark\nbg = #333333\nfg = white\nborder = #888888\nfont_name = Arial\nfont_size = 12\nanimation_in = Slide Up + Fade\nanimation_out = Slide Down + Fade\nx_rule = default\ny_rule = default\nx_val = 0\ny_val = 0\nanchor = se\n'),
         ('Light', '[Style]\nname = Light\nbg = #f0f0f0\nfg = black\nborder = #b0b0b0\nfont_name = Arial\nfont_size = 12\nanimation_in = Fade In\nanimation_out = Fade Out\nx_rule = default\ny_rule = default\nx_val = 0\ny_val = 0\nanchor = se\n')
@@ -348,12 +478,160 @@ def ensure_default_files():
         if not os.path.exists(style_config_path):
             with open(style_config_path, 'w', encoding='utf-8') as f: f.write(content)
 
-    # Create default animation set
     anim_path = os.path.join(APP_DATA_PATH, 'Animations', 'Default')
     os.makedirs(anim_path, exist_ok=True)
     anim_config_path = os.path.join(anim_path, 'config.ini')
     if not os.path.exists(anim_config_path):
-        with open(anim_config_path, 'w', encoding='utf-8') as f: f.write('[AnimationSet]\nname = Default\nanimation_in = Slide Up + Fade\nanimation_out = Slide Down + Fade\n')
+        with open(anim_config_path, 'w', encoding='utf-8') as f:
+            f.write('[AnimationSet]\n')
+            f.write('name = Default\n')
+            f.write('animation_in = Slide Up + Fade\n')
+            f.write('animation_out = Slide Down + Fade\n')
+            f.write('in_offset_x = 0\n')
+            f.write('in_offset_y = 0\n')
+            f.write('out_offset_x = 0\n')
+            f.write('out_offset_y = 0\n\n')
+            f.write('[In]\n')
+            f.write('# Keyframes for IN animation. Use any keys describing properties.\n')
+            f.write('frame1 = pos=se;seconds=0.0;offset_x=0;offset_y=0\n\n')
+            f.write('[Out]\n')
+            f.write('# Keyframes for OUT animation.\n')
+            f.write('frame1 = pos=se;seconds=0.25;offset_x=0;offset_y=0\n')
+    first_run_flag = os.path.join(APP_DATA_PATH, '.first_run_shown')
+    if not os.path.exists(first_run_flag):
+        set_os_language_on_first_run()
+        load_messages()
+        register_app_user_model_id()
+        set_app_user_model_id()
+        
+        if IS_MSIX:
+            title_text = UI.get('FirstRunToastTitle', "eh's Clipboard")
+            message_text = UI.get('FirstRunToastMessage', "You're good to go, this program runs on the system tray, try copying something!")
+            try:
+                notification = Notification(
+                    app_id="Eh's Clipboard",
+                    title=title_text,
+                    msg=message_text,
+                    duration="short"
+                )
+                notification.set_audio(audio.Default, loop=False)
+                notification.show()
+                try: open(first_run_flag, 'w', encoding='utf-8').close()
+                except Exception: pass
+            except Exception:
+                pass
+        else:
+            icon_path = find_icon_path()
+            if icon_path:
+                title_text = UI.get('FirstRunToastTitle', "eh's Clipboard")
+                message_text = UI.get('FirstRunToastMessage', "You're good to go, this program runs on the system tray, try copying something!")
+                try:
+                    notification = Notification(
+                        app_id=APP_ID,
+                        title=title_text,
+                        msg=message_text,
+                        duration="short",
+                        icon=icon_path
+                    )
+                    notification.set_audio(audio.Default, loop=False)
+                    notification.show()
+                    try: open(first_run_flag, 'w', encoding='utf-8').close()
+                    except Exception: pass
+                except Exception:
+                    pass
+
+def ensure_ini_defaults():
+    lang_dir = os.path.join(APP_DATA_PATH, 'lang')
+    if os.path.exists(lang_dir):
+        for fname in os.listdir(lang_dir):
+            if not fname.lower().endswith('.ini'): continue
+            path = os.path.join(lang_dir, fname)
+            try:
+                cp = configparser.ConfigParser(interpolation=None, strict=False)
+                cp.optionxform = str
+                cp.read(path, encoding='utf-8-sig')
+                changed = False
+                if 'UI' not in cp: cp['UI'] = {}; changed = True
+                for k, v in DEFAULT_UI.items():
+                    if k not in cp['UI']: cp['UI'][k] = str(v); changed = True
+
+                if 'Messages' not in cp: cp['Messages'] = {}; changed = True
+                for k, v in DEFAULT_MESSAGES.items():
+                    if k not in cp['Messages']: cp['Messages'][k] = str(v); changed = True
+
+                if changed:
+                    with open(path, 'w', encoding='utf-8') as f: cp.write(f)
+            except Exception: pass
+
+    styles_dir = os.path.join(APP_DATA_PATH, 'Styles')
+    if os.path.exists(styles_dir):
+        for entry in os.listdir(styles_dir):
+            full = os.path.join(styles_dir, entry)
+            if not os.path.isdir(full): continue
+            cfg_path = os.path.join(full, 'config.ini')
+
+            defaults = {'name': entry, 'bg': '#333333', 'fg': 'white', 'border': '#888888', 'font_name': 'Arial', 'font_size': '12', 'animation_in': 'Slide Up + Fade', 'animation_out': 'Slide Down + Fade', 'x_rule': 'default', 'y_rule': 'default', 'x_val': '0', 'y_val': '0', 'anchor': 'se'}
+
+            if not os.path.exists(cfg_path):
+                try:
+                    with open(cfg_path, 'w', encoding='utf-8') as f:
+                        f.write('[Style]\n')
+                        for k, v in defaults.items(): f.write(f"{k} = {v}\n")
+                except: pass
+            else:
+                try:
+                    cp = configparser.ConfigParser(interpolation=None, strict=False)
+                    cp.optionxform = str
+                    cp.read(cfg_path, encoding='utf-8-sig')
+                    changed = False
+                    if 'Style' not in cp: cp['Style'] = {}; changed = True
+                    for k, v in defaults.items():
+                        if k not in cp['Style']: cp['Style'][k] = v; changed = True
+                    if changed:
+                        with open(cfg_path, 'w', encoding='utf-8') as f: cp.write(f)
+                except: pass
+
+    anim_dir = os.path.join(APP_DATA_PATH, 'Animations')
+    if os.path.exists(anim_dir):
+        for entry in os.listdir(anim_dir):
+            full = os.path.join(anim_dir, entry)
+            if not os.path.isdir(full): continue
+            cfg_path = os.path.join(full, 'config.ini')
+
+            aset_defaults = {'name': entry, 'animation_in': 'Slide Up + Fade', 'animation_out': 'Slide Down + Fade', 'in_offset_x': '0', 'in_offset_y': '0', 'out_offset_x': '0', 'out_offset_y': '0'}
+
+            if not os.path.exists(cfg_path):
+                try:
+                    with open(cfg_path, 'w', encoding='utf-8') as f:
+                        f.write(f'[AnimationSet]\nname = {entry}\n')
+                        for k, v in aset_defaults.items(): 
+                            if k != 'name': f.write(f"{k} = {v}\n")
+                        f.write('\n[In]\nframe1 = pos=se;seconds=0.0;offset_x=0;offset_y=0\n')
+                        f.write('\n[Out]\nframe1 = pos=se;seconds=0.25;offset_x=0;offset_y=0\n')
+                except: pass
+            else:
+                try:
+                    cp = configparser.ConfigParser(interpolation=None, strict=False)
+                    cp.optionxform = str
+                    cp.read(cfg_path, encoding='utf-8-sig')
+                    changed = False
+
+                    if 'AnimationSet' not in cp: cp['AnimationSet'] = {}; changed = True
+                    for k, v in aset_defaults.items():
+                        if k not in cp['AnimationSet']: cp['AnimationSet'][k] = v; changed = True
+
+                    if 'In' not in cp: 
+                        cp['In'] = {'frame1': 'pos=se;seconds=0.0;offset_x=0;offset_y=0'}
+                        changed = True
+                    if 'Out' not in cp: 
+                        cp['Out'] = {'frame1': 'pos=se;seconds=0.25;offset_x=0;offset_y=0'}
+                        changed = True
+
+                    if changed:
+                        with open(cfg_path, 'w', encoding='utf-8') as f: cp.write(f)
+                except: pass
+
+ensure_ini_defaults()
 
 def load_messages():
     global UI, MESSAGES
@@ -371,7 +649,8 @@ def load_messages():
             return
 
     try:
-        cp = configparser.ConfigParser(interpolation=None)
+        cp = configparser.ConfigParser(interpolation=None, strict=False)
+        cp.optionxform = str
         cp.read(path, encoding='utf-8-sig')
         if 'Messages' in cp:
             for key in MESSAGES: MESSAGES[key] = cp['Messages'].get(key, MESSAGES[key])
@@ -400,12 +679,15 @@ def validate_settings():
 
 def open_path(path):
     try:
+        if not os.path.exists(path):
+            os.makedirs(path, exist_ok=True)
         os.startfile(path)
     except Exception:
         try:
-            if sys.platform == 'win32': os.system(f'start "" "{path}"')
+            if sys.platform == 'win32':
+                os.system(f'start "" "{path}"')
         except Exception as e:
-             show_error_messagebox("Error", f"Could not open path: {path}\n\nError: {e}")
+            show_error_messagebox("Error", f"Could not open path: {path}\n\nError: {e}")
 
 def calculate_position(w, h):
     x_anchor, y_anchor = 0, 0
@@ -458,7 +740,15 @@ def show_toast(text):
     toast.update_idletasks()
     w_small, h_small = toast.winfo_reqwidth(), toast.winfo_reqheight()
 
-    anim_out_func = ANIMATIONS_OUT.get(CURRENT_SETTINGS.get('animation_out'), an_fade_out)
+    anim_out_name = CURRENT_SETTINGS.get('animation_out')
+    anim_out_func = ANIMATIONS_OUT.get(anim_out_name, an_fade_out)
+    p_out = CUSTOM_ANIM_PARAMS.get(anim_out_name)
+    if p_out:
+        def _wrapped_out(window, w, h, x, y, func=anim_out_func, p=p_out):
+            if 'out_offset_x' in p: x += p['out_offset_x']
+            if 'out_offset_y' in p: y += p['out_offset_y']
+            return func(window, w, h, x, y)
+        anim_out_func = _wrapped_out
     hover_state = {'job': None, 'is_expanded': False}
 
     def shrink_toast():
@@ -510,7 +800,15 @@ def show_toast(text):
     x, y = calculate_position(w_small, h_small)
     toast.geometry(f"{w_small}x{h_small}+{x}+{y}")
     toast.attributes("-alpha", 0); toast.deiconify()
-    anim_in_func = ANIMATIONS_IN.get(CURRENT_SETTINGS.get('animation_in'), an_fade_in)
+    anim_in_name = CURRENT_SETTINGS.get('animation_in')
+    anim_in_func = ANIMATIONS_IN.get(anim_in_name, an_fade_in)
+    p_in = CUSTOM_ANIM_PARAMS.get(anim_in_name)
+    if p_in:
+        def _wrapped_in(window, w, h, x, y, func=anim_in_func, p=p_in):
+            if 'in_offset_x' in p: x += p['in_offset_x']
+            if 'in_offset_y' in p: y += p['in_offset_y']
+            return func(window, w, h, x, y)
+        anim_in_func = _wrapped_in
     anim_in_func(toast, w_small, h_small, x, y)
     fade_out_job = root.after(3000, lambda: anim_out_func(toast, w_small, h_small, x, y))
 
@@ -541,16 +839,24 @@ def apply_style(style_name):
     update_systray_menu()
 
 def open_about_threaded(ui_dict):
-    if any(t.name == 'QtAboutThread' and t.is_alive() for t in threading.enumerate()):
+    import tempfile, json
+    try:
+        tf = tempfile.NamedTemporaryFile(delete=False, suffix='.json', mode='w', encoding='utf-8')
+        json.dump(ui_dict or {}, tf)
+        tf.close()
+    except Exception:
         return
-            
-    about_thread = threading.Thread(
-        target=about_qt.show_about_dialog, 
-        args=(ui_dict, UPDATE_AND_QUIT_FLAG), 
-        name='QtAboutThread', 
-        daemon=True
-    )
-    about_thread.start()
+
+    if getattr(sys, 'frozen', False):
+        try:
+            subprocess.Popen([sys.executable, "about", tf.name], close_fds=True)
+        except Exception:
+            pass
+    else:
+        try:
+            subprocess.Popen([sys.executable, os.path.join(BASE_PATH, 'about_qt.py'), tf.name], close_fds=True)
+        except Exception:
+            pass
 
 def update_systray_menu():
     global app_icon
@@ -594,7 +900,7 @@ def update_systray_menu():
         item(UI.get('EditSettings'), pystray.Menu(*settings_menu)),
         pystray.Menu.SEPARATOR,
         item(UI.get('About'), lambda: open_about_threaded(UI)),
-        item(UI.get('Quit'), lambda: (app_icon.stop(), root.destroy())),
+        item(UI.get('Quit'), lambda: (app_icon.stop(), root.destroy()))
     )
     if app_icon: app_icon.menu = pystray.Menu(*menu_items)
 
@@ -624,12 +930,21 @@ class PositionerWindow(tk.Toplevel):
         self.instructions.place_forget()
         self.start_x, self.start_y = event.x_root, event.y_root
         if self.rect: self.canvas.delete(self.rect)
+        if hasattr(self, 'preview_toast') and self.preview_toast:
+            try: self.preview_toast.destroy()
+            except Exception: pass
+            self.preview_toast = None
         self.rect = self.canvas.create_rectangle(self.start_x, self.start_y, self.start_x, self.start_y, outline="white", width=2, dash=(5, 5))
 
     def on_drag(self, event): self.canvas.coords(self.rect, self.start_x, self.start_y, event.x_root, event.y_root)
 
     def on_release(self, event):
         self.end_x, self.end_y = event.x_root, event.y_root
+        dx = abs(self.end_x - self.start_x)
+        dy = abs(self.end_y - self.start_y)
+        if dx < 6 and dy < 6:
+            self.start_x = self.end_x = event.x_root
+            self.start_y = self.end_y = event.y_root
         self.preview_toast = tk.Toplevel(self); self.preview_toast.overrideredirect(True)
         self.preview_toast.attributes("-toolwindow", 1); self.preview_toast.config(bg="#888888")
         frame = tk.Frame(self.preview_toast, bg="#333333"); frame.pack(padx=1, pady=1)
@@ -660,12 +975,14 @@ class PositionerWindow(tk.Toplevel):
 
 def main():
     global root, screen_width, screen_height, app_photo_icon
+    register_app_user_model_id()
+    set_app_user_model_id()
     root = tk.Tk(); root.withdraw()
     app_photo_icon = create_image_for_tk()
     screen_width, screen_height = root.winfo_screenwidth(), root.winfo_screenheight()
     
-    ensure_default_files()
     load_config()
+    ensure_default_files()
     load_builtin_styles()
     load_styles_from_folder()
     load_animation_sets_from_folder()
@@ -687,4 +1004,21 @@ def main():
     root.mainloop()
 
 if __name__ == "__main__":
-    main()
+    if len(sys.argv) > 1 and sys.argv[1] == "about":
+        try:
+            import json
+            import about_qt
+            
+            ui_data = {}
+            if len(sys.argv) > 2 and os.path.exists(sys.argv[2]):
+                try:
+                    with open(sys.argv[2], 'r', encoding='utf-8') as f:
+                        ui_data = json.load(f)
+                except Exception:
+                    pass
+            
+            about_qt.show_about_dialog(ui_data, None)
+        except Exception:
+            pass
+    else:
+        main()
