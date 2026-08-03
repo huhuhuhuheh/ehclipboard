@@ -7,6 +7,7 @@
 <a href="https://github.com/huhuhuhuheh/ehclipboard/releases">
   <img src="https://img.shields.io/github/v/release/huhuhuhuheh/ehclipboard" alt="Latest Release"></a>
     <a href="#"><img alt="winget package" src="https://img.shields.io/winget/v/Eh.clipboard?label=winget"></a>
+    <a title="Crowdin" target="_blank" href="https://crowdin.com/project/EhClipboard"><img src="https://badges.crowdin.net/EhClipboard/localized.svg"></a>
   <h2>Where to install</h2>
   <p>Either one you can grab it from the <a href="https://github.com/huhuhuhuheh/ehclipboard/releases">releases</a> tab, or via the <a href="https://apps.microsoft.com/detail/9MWGR59WHT00">Microsoft Store</a></p>
   <p>or if you really want, you can well uhh install from your terminal i guess</p>
