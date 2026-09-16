@@ -20,7 +20,6 @@ import webbrowser
 import traceback
 import hashlib
 import queue
-import about_qt
 import subprocess
 import passwords
 import shutil
@@ -154,6 +153,8 @@ screen_height = 0
 app_icon = None
 app_photo_icon = None
 UPDATE_AND_QUIT_FLAG = threading.Event()
+_options_process = None
+_about_process = None
 
 def show_error_messagebox(title, message):
     """Displays a Tkinter error messagebox, ensuring it's top-level and has the app icon."""
@@ -410,6 +411,7 @@ def load_builtin_styles():
 
 def load_styles_from_folder():
     styles_dir = os.path.join(APP_DATA_PATH, 'Styles')
+    if not os.path.isdir(styles_dir): return
     for entry in os.listdir(styles_dir):
         full = os.path.join(styles_dir, entry)
         if os.path.isdir(full):
@@ -432,6 +434,7 @@ def load_styles_from_folder():
 def load_animation_sets_from_folder():
     ANIMATION_SETS.clear()
     anim_dir = os.path.join(APP_DATA_PATH, 'Animations')
+    if not os.path.isdir(anim_dir): return
     for entry in os.listdir(anim_dir):
         full = os.path.join(anim_dir, entry)
         if os.path.isdir(full):
@@ -1337,7 +1340,7 @@ def monitor_clipboard():
                 last_config_mtime = mtime
                 root.after(0, apply_external_changes)
         except Exception: pass
-        time.sleep(0.1)
+        time.sleep(0.3)
 
 def create_image_for_tray(): return Image.open(io.BytesIO(base64.b64decode(ICON_BASE64)))
 def create_image_for_tk(): return ImageTk.PhotoImage(create_image_for_tray())
@@ -1354,6 +1357,10 @@ def apply_style(style_name):
 
 def open_about_threaded(ui_dict):
     import tempfile, json
+    global _about_process
+    if _about_process is not None and _about_process.poll() is None:
+        return
+    _about_process = None
     try:
         tf = tempfile.NamedTemporaryFile(delete=False, suffix='.json', mode='w', encoding='utf-8')
         json.dump(ui_dict or {}, tf)
@@ -1363,17 +1370,21 @@ def open_about_threaded(ui_dict):
 
     if getattr(sys, 'frozen', False):
         try:
-            subprocess.Popen([sys.executable, "about", tf.name], close_fds=True)
+            _about_process = subprocess.Popen([sys.executable, "about", tf.name], close_fds=True)
         except Exception:
             pass
     else:
         try:
-            subprocess.Popen([sys.executable, os.path.join(BASE_PATH, 'about_qt.py'), tf.name], close_fds=True)
+            _about_process = subprocess.Popen([sys.executable, os.path.join(BASE_PATH, 'about_qt.py'), tf.name], close_fds=True)
         except Exception:
             pass
 
 def open_options_threaded(ui_dict):
     import tempfile, json
+    global _options_process
+    if _options_process is not None and _options_process.poll() is None:
+        return
+    _options_process = None
     try:
         load_builtin_styles()
         load_styles_from_folder()
@@ -1400,12 +1411,12 @@ def open_options_threaded(ui_dict):
 
     if getattr(sys, 'frozen', False):
         try:
-            subprocess.Popen([sys.executable, "options", tf.name], close_fds=True)
+            _options_process = subprocess.Popen([sys.executable, "options", tf.name], close_fds=True)
         except Exception:
             pass
     else:
         try:
-            subprocess.Popen([sys.executable, os.path.join(BASE_PATH, 'options_qt.py'), tf.name], close_fds=True)
+            _options_process = subprocess.Popen([sys.executable, os.path.join(BASE_PATH, 'options_qt.py'), tf.name], close_fds=True)
         except Exception:
             pass
 
@@ -1714,40 +1725,43 @@ def update_systray_menu():
     def create_anim_action(key, value):
         def action(icon, item): CURRENT_SETTINGS[key] = value; save_config(); update_systray_menu()
         return action
-    def style_menu_generator():
-        load_builtin_styles(); load_styles_from_folder()
-        for name in sorted(STYLES.keys()):
-            def create_action(n): return lambda icon, item: apply_style(n)
-            yield item(name, create_action(name), checked=lambda item, n=name: CURRENT_SETTINGS['style'] == n, radio=True)
-    def lang_menu_generator():
-        load_languages()
-        current_lang = CURRENT_SETTINGS.get('language', 'en-US.ini')
-        if current_lang not in LANGS:
-            show_error_messagebox("Language File Not Found", f"Active language '{current_lang}' was deleted. Reverting to English.")
-            CURRENT_SETTINGS['language'] = 'en-US.ini'; save_config(); load_messages(); update_systray_menu()
-        for fname, display in sorted(LANGS.items(), key=lambda x: x[1]):
-            def create_action(f): return lambda icon, item: (CURRENT_SETTINGS.update({'language': f}), save_config(), load_messages(), update_systray_menu())
-            yield item(display, create_action(fname), checked=lambda item, f=fname: CURRENT_SETTINGS.get('language') == f, radio=True)
-    def anim_set_menu_generator():
-        load_animation_sets_from_folder()
-        for name, anim_set in sorted(ANIMATION_SETS.items()):
-            def create_action(a): return lambda icon, item: (CURRENT_SETTINGS.update(a), save_config(), update_systray_menu())
-            yield item(name, create_action(anim_set), checked=lambda item, a=anim_set: CURRENT_SETTINGS['animation_in'] == a['animation_in'] and CURRENT_SETTINGS['animation_out'] == a['animation_out'], radio=True)
+
+    load_builtin_styles(); load_styles_from_folder()
+    style_items = []
+    for name in sorted(STYLES.keys()):
+        def create_style_action(n): return lambda icon, item: apply_style(n)
+        style_items.append(item(name, create_style_action(name), checked=lambda item, n=name: CURRENT_SETTINGS['style'] == n, radio=True))
+
+    load_languages()
+    current_lang = CURRENT_SETTINGS.get('language', 'en-US.ini')
+    if current_lang not in LANGS:
+        show_error_messagebox("Language File Not Found", f"Active language '{current_lang}' was deleted. Reverting to English.")
+        CURRENT_SETTINGS['language'] = 'en-US.ini'; save_config(); load_messages(); update_systray_menu()
+    lang_items = []
+    for fname, display in sorted(LANGS.items(), key=lambda x: x[1]):
+        def create_lang_action(f): return lambda icon, item: (CURRENT_SETTINGS.update({'language': f}), save_config(), load_messages(), update_systray_menu())
+        lang_items.append(item(display, create_lang_action(fname), checked=lambda item, f=fname: CURRENT_SETTINGS.get('language') == f, radio=True))
+
+    load_animation_sets_from_folder()
+    anim_set_items = []
+    for name, anim_set in sorted(ANIMATION_SETS.items()):
+        def create_anim_set_action(a): return lambda icon, item: (CURRENT_SETTINGS.update(a), save_config(), update_systray_menu())
+        anim_set_items.append(item(name, create_anim_set_action(anim_set), checked=lambda item, a=anim_set: CURRENT_SETTINGS['animation_in'] == a['animation_in'] and CURRENT_SETTINGS['animation_out'] == a['animation_out'], radio=True))
 
     settings_menu = [item(UI.get('EditConfig'), lambda: open_path(CONFIG_FILE)), item(UI.get('Options'), lambda: open_options_threaded(UI)), pystray.Menu.SEPARATOR, item(UI.get('OpenStyles'), lambda: open_path(styles_dir)), item(UI.get('OpenLangs'), lambda: open_path(lang_dir)), item(UI.get('OpenAnims'), lambda: open_path(anim_dir)), item(UI.get('OpenGlobal'), lambda: open_path(APP_DATA_PATH))]
     
     menu_items = (
         item(UI.get('SetPosition'), lambda: open_positioner()),
-        item(UI.get('Style'), pystray.Menu(lambda: style_menu_generator())),
-        item(UI.get('AnimationSet'), pystray.Menu(lambda: anim_set_menu_generator())),
+        item(UI.get('Style'), pystray.Menu(*style_items)),
+        item(UI.get('AnimationSet'), pystray.Menu(*anim_set_items)),
         item(UI.get('AnimationIn'), pystray.Menu(*(item(name, create_anim_action('animation_in', name), checked=lambda item, n=name: CURRENT_SETTINGS['animation_in'] == n, radio=True) for name in ANIMATIONS_IN.keys()))),
         item(UI.get('AnimationOut'), pystray.Menu(*(item(name, create_anim_action('animation_out', name), checked=lambda item, n=name: CURRENT_SETTINGS['animation_out'] == n, radio=True) for name in ANIMATIONS_OUT.keys()))),
-        item(UI.get('Language'), pystray.Menu(lambda: lang_menu_generator())),
+        item(UI.get('Language'), pystray.Menu(*lang_items)),
         pystray.Menu.SEPARATOR,
         item(UI.get('EditSettings'), pystray.Menu(*settings_menu)),
         pystray.Menu.SEPARATOR,
         item(UI.get('About'), lambda: open_about_threaded(UI)),
-        item(UI.get('Quit'), lambda: (app_icon.stop(), root.destroy()))
+        item(UI.get('Quit'), lambda: UPDATE_AND_QUIT_FLAG.set())
     )
     if app_icon: app_icon.menu = pystray.Menu(*menu_items)
 
@@ -1781,11 +1795,12 @@ def _patch_tray_menu_foreground(icon):
 
 
 def setup_tray_and_monitoring(icon):
-    global app_icon; app_icon = icon; icon.visible = True
+    global app_icon; app_icon = icon
+    _perf('setup start')
+    icon.visible = True; _perf('icon visible')
     _patch_tray_menu_foreground(icon)
-    update_systray_menu()
-    _restore_mask_session()
     threading.Thread(target=monitor_clipboard, daemon=True).start()
+    _perf('monitor started')
 
 def open_positioner(): PositionerWindow(root, app_photo_icon)
 
@@ -1858,32 +1873,74 @@ def main():
     root = tk.Tk(); root.withdraw()
     app_photo_icon = create_image_for_tk()
     screen_width, screen_height = root.winfo_screenwidth(), root.winfo_screenheight()
-    
-    load_config()
-    ensure_default_files()
-    load_builtin_styles()
-    load_styles_from_folder()
-    load_animation_sets_from_folder()
-    load_messages()
-    validate_settings()
-    
+
     tray_image = create_image_for_tray()
     icon = pystray.Icon("ehs_clipboard", tray_image, "eh's clipboard")
-    
+
     def check_quit_flag():
         if UPDATE_AND_QUIT_FLAG.is_set():
             app_icon.stop()
             root.destroy()
         else:
             root.after(250, check_quit_flag)
-    
+
     check_quit_flag()
-    try:
-        VAULT_GUARD = _start_vault_guard(root)
-    except Exception:
-        VAULT_GUARD = None
-    threading.Thread(target=lambda: icon.run(setup=setup_tray_and_monitoring), daemon=True).start()
+    _perf('pre run_detached')
+    icon.run_detached(setup=setup_tray_and_monitoring)
+    _perf('after run_detached')
+    root.after(0, _startup_background)
     root.mainloop()
+
+_PERF_LOG = None
+if os.environ.get('EH_CLIPBOARD_PERF'):
+    try:
+        _PERF_LOG = open(os.path.join(APP_DATA_PATH, 'perf.log'), 'a', encoding='utf-8')
+        _PERF_LOG.write(f'\n=== run at {time.strftime("%H:%M:%S")} ===\n')
+    except Exception:
+        _PERF_LOG = None
+
+def _perf(marker):
+    if _PERF_LOG is not None:
+        try:
+            _PERF_LOG.write(f'{time.perf_counter():8.3f}  {marker}\n')
+            _PERF_LOG.flush()
+        except Exception:
+            pass
+
+def _startup_background():
+    """Heavy startup work on a worker thread; tkinter-touching tail on main."""
+    def _work():
+        _perf('worker start')
+        try:
+            load_config(); _perf('load_config')
+            ensure_default_files(); _perf('ensure_default_files')
+            load_builtin_styles()
+
+            load_styles_from_folder(); _perf('styles')
+            load_animation_sets_from_folder(); _perf('anims')
+            load_messages(); _perf('messages')
+        except Exception:
+            traceback.print_exc()
+        finally:
+            try:
+                root.after(0, _startup_finalize)
+            except Exception:
+                pass
+
+    threading.Thread(target=_work, daemon=True).start()
+
+def _startup_finalize():
+    global VAULT_GUARD
+    try:
+        validate_settings(); _perf('validate')
+        update_systray_menu(); _perf('update_menu')
+        try:
+            VAULT_GUARD = _start_vault_guard(root); _perf('vault_guard')
+        except Exception:
+            VAULT_GUARD = None
+        _restore_mask_session(); _perf('restore_mask')
+    except Exception:
+        traceback.print_exc()
 
 if __name__ == "__main__":
     if len(sys.argv) > 2 and sys.argv[1] == "playsound":
