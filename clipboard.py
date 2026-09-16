@@ -155,6 +155,7 @@ app_photo_icon = None
 UPDATE_AND_QUIT_FLAG = threading.Event()
 _options_process = None
 _about_process = None
+_tk_queue = queue.Queue()
 
 def show_error_messagebox(title, message):
     """Displays a Tkinter error messagebox, ensuring it's top-level and has the app icon."""
@@ -1146,6 +1147,7 @@ def remask_passwords():
 
 def show_toast(text):
     global toast, fade_out_job
+    _toast_t0 = time.perf_counter()
     refresh_settings_from_disk()
     pw_reveal = []
     if passwords.is_unlocked() and CURRENT_SETTINGS.get('pw_hide_from_toast', True):
@@ -1296,6 +1298,7 @@ def show_toast(text):
     _pw_capture_force = bool(pw_reveal) and _pw_should_hide_capture()
     set_hide_from_capture(toast, force=_pw_capture_force)
     root.after(50, lambda: set_hide_from_capture(toast, force=_pw_capture_force))
+    _perf('show_toast done %.0fms' % ((time.perf_counter() - _toast_t0) * 1000))
 
 def apply_external_changes():
     try:
@@ -1322,25 +1325,50 @@ def apply_external_changes():
     except Exception:
         pass
 
+def _clipboard_sequence():
+    try:
+        return int(ctypes.windll.user32.GetClipboardSequenceNumber())
+    except Exception:
+        return -1
+
+def _pump_tk_queue():
+    try:
+        for _ in range(100):
+            kind, payload = _tk_queue.get_nowait()
+            try:
+                if kind == 'toast':
+                    show_toast(payload)
+                elif kind == 'config':
+                    apply_external_changes()
+            except Exception:
+                traceback.print_exc()
+    except queue.Empty:
+        pass
+    root.after(10, _pump_tk_queue)
+
 def monitor_clipboard():
     global last_text
+    last_seq = _clipboard_sequence()
     try: last_text = pyperclip.paste()
     except Exception: last_text = ""
     last_config_mtime = os.path.getmtime(CONFIG_FILE) if os.path.exists(CONFIG_FILE) else None
     while True:
         try:
-            current_text = pyperclip.paste()
-            if current_text != last_text and current_text.strip() != "":
-                last_text = current_text
-                root.after(0, show_toast, current_text)
+            seq = _clipboard_sequence()
+            if seq != last_seq:
+                last_seq = seq
+                current_text = pyperclip.paste()
+                if current_text != last_text and current_text.strip() != "":
+                    last_text = current_text
+                    _tk_queue.put(('toast', current_text))
         except Exception: pass
         try:
             mtime = os.path.getmtime(CONFIG_FILE) if os.path.exists(CONFIG_FILE) else None
             if mtime != last_config_mtime:
                 last_config_mtime = mtime
-                root.after(0, apply_external_changes)
+                _tk_queue.put(('config', None))
         except Exception: pass
-        time.sleep(0.3)
+        time.sleep(0.1)
 
 def create_image_for_tray(): return Image.open(io.BytesIO(base64.b64decode(ICON_BASE64)))
 def create_image_for_tk(): return ImageTk.PhotoImage(create_image_for_tray())
@@ -1888,6 +1916,7 @@ def main():
     _perf('pre run_detached')
     icon.run_detached(setup=setup_tray_and_monitoring)
     _perf('after run_detached')
+    _pump_tk_queue()
     root.after(0, _startup_background)
     root.mainloop()
 
