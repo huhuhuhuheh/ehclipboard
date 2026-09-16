@@ -18,12 +18,16 @@ import configparser
 import os
 import webbrowser
 import traceback
+import hashlib
 import queue
 import about_qt
 import subprocess
+import passwords
+import shutil
 
 import ctypes
 from ctypes import wintypes
+import psutil
 
 # --- Core Application Paths ---
 IS_MSIX = False
@@ -74,6 +78,15 @@ CURRENT_SETTINGS = {
     'y_val': 0,
     'pos_anchor': 'se',
     'language': 'en-US.ini',
+    'hide_from_capture': False,
+    'pw_hide_from_toast': True,
+    'pw_show_on_hover': False,
+    'pw_hover_seconds': 2,
+    'pw_hide_from_capture': True,
+    'pw_pending_open_editor': False,
+    'pw_lock_on_close': False,
+    'pw_lock_after_time': False,
+    'pw_lock_timeout': 3600,
 }
 
 APP_ID = "gay.eh.clipboard"
@@ -301,17 +314,94 @@ def load_config():
                 CURRENT_SETTINGS['y_val'] = settings.getint('y_val', CURRENT_SETTINGS['y_val'])
                 CURRENT_SETTINGS['pos_anchor'] = settings.get('pos_anchor', CURRENT_SETTINGS['pos_anchor'])
                 CURRENT_SETTINGS['language'] = settings.get('language', CURRENT_SETTINGS.get('language'))
+                try:
+                    CURRENT_SETTINGS['hide_from_capture'] = settings.getboolean('hide_from_capture', CURRENT_SETTINGS.get('hide_from_capture', False))
+                except Exception:
+                    CURRENT_SETTINGS['hide_from_capture'] = False
+            if 'Passwords' in config:
+                p = config['Passwords']
+                CURRENT_SETTINGS['pw_hide_from_toast'] = p.getboolean('hide_passwords_from_toast', CURRENT_SETTINGS.get('pw_hide_from_toast', True))
+                CURRENT_SETTINGS['pw_show_on_hover'] = p.getboolean('show_passwords_on_hover', CURRENT_SETTINGS.get('pw_show_on_hover', False))
+                CURRENT_SETTINGS['pw_hover_seconds'] = p.getint('hover_reveal_seconds', CURRENT_SETTINGS.get('pw_hover_seconds', 2))
+                CURRENT_SETTINGS['pw_hide_from_capture'] = p.getboolean('hide_passwords_from_capture', CURRENT_SETTINGS.get('pw_hide_from_capture', True))
+                CURRENT_SETTINGS['pw_pending_open_editor'] = p.getboolean('pending_open_editor', CURRENT_SETTINGS.get('pw_pending_open_editor', False))
+                CURRENT_SETTINGS['pw_lock_on_close'] = p.getboolean('lock_on_close', CURRENT_SETTINGS.get('pw_lock_on_close', False))
+                CURRENT_SETTINGS['pw_lock_after_time'] = p.getboolean('lock_after_time', CURRENT_SETTINGS.get('pw_lock_after_time', False))
+                CURRENT_SETTINGS['pw_lock_timeout'] = p.getint('lock_timeout', CURRENT_SETTINGS.get('pw_lock_timeout', 3600))
         except Exception as e:
             show_error_messagebox("Config File Error", f"Failed to load or parse '{CONFIG_FILE}'.\nUsing default settings.\n\nError: {e}")
 
 def save_config():
     try:
         os.makedirs(APP_DATA_PATH, exist_ok=True)
-        config['Settings'] = {k: str(v) for k, v in CURRENT_SETTINGS.items()}
+        config['Settings'] = {k: str(v) for k, v in CURRENT_SETTINGS.items() if not k.startswith('pw_')}
+        config['Passwords'] = {
+            'hide_passwords_from_toast': str(CURRENT_SETTINGS.get('pw_hide_from_toast', True)),
+            'show_passwords_on_hover': str(CURRENT_SETTINGS.get('pw_show_on_hover', False)),
+            'hover_reveal_seconds': str(CURRENT_SETTINGS.get('pw_hover_seconds', 2)),
+            'hide_passwords_from_capture': str(CURRENT_SETTINGS.get('pw_hide_from_capture', True)),
+            'pending_open_editor': str(CURRENT_SETTINGS.get('pw_pending_open_editor', False)),
+            'lock_on_close': str(CURRENT_SETTINGS.get('pw_lock_on_close', False)),
+            'lock_after_time': str(CURRENT_SETTINGS.get('pw_lock_after_time', False)),
+            'lock_timeout': str(CURRENT_SETTINGS.get('pw_lock_timeout', 3600)),
+        }
         with open(CONFIG_FILE, 'w', encoding='utf-8') as configfile:
             config.write(configfile)
     except Exception as e:
         show_error_messagebox("Save Config Error", f"Could not save settings to '{CONFIG_FILE}'.\n\nError: {e}")
+
+def refresh_settings_from_disk():
+    if not os.path.exists(CONFIG_FILE):
+        return
+    try:
+        cp = configparser.ConfigParser(interpolation=None)
+        cp.read(CONFIG_FILE, encoding='utf-8-sig')
+        if 'Settings' not in cp:
+            return
+        s = cp['Settings']
+        prev_lang = CURRENT_SETTINGS.get('language')
+        readers = {
+            'style': lambda: s.get('style', CURRENT_SETTINGS['style']),
+            'animation_in': lambda: s.get('animation_in', CURRENT_SETTINGS['animation_in']),
+            'animation_out': lambda: s.get('animation_out', CURRENT_SETTINGS['animation_out']),
+            'x_rule': lambda: s.get('x_rule', CURRENT_SETTINGS['x_rule']),
+            'y_rule': lambda: s.get('y_rule', CURRENT_SETTINGS['y_rule']),
+            'x_val': lambda: s.getint('x_val', CURRENT_SETTINGS['x_val']),
+            'y_val': lambda: s.getint('y_val', CURRENT_SETTINGS['y_val']),
+            'pos_anchor': lambda: s.get('pos_anchor', CURRENT_SETTINGS['pos_anchor']),
+            'language': lambda: s.get('language', CURRENT_SETTINGS['language']),
+            'hide_from_capture': lambda: s.getboolean('hide_from_capture', CURRENT_SETTINGS.get('hide_from_capture', False)),
+        }
+        for key, reader in readers.items():
+            try:
+                CURRENT_SETTINGS[key] = reader()
+            except Exception:
+                pass
+        if 'Passwords' in cp:
+            p = cp['Passwords']
+            pw_readers = {
+                'pw_hide_from_toast': lambda: p.getboolean('hide_passwords_from_toast', CURRENT_SETTINGS.get('pw_hide_from_toast', True)),
+                'pw_show_on_hover': lambda: p.getboolean('show_passwords_on_hover', CURRENT_SETTINGS.get('pw_show_on_hover', False)),
+                'pw_hover_seconds': lambda: p.getint('hover_reveal_seconds', CURRENT_SETTINGS.get('pw_hover_seconds', 2)),
+                'pw_hide_from_capture': lambda: p.getboolean('hide_passwords_from_capture', CURRENT_SETTINGS.get('pw_hide_from_capture', True)),
+                'pw_pending_open_editor': lambda: p.getboolean('pending_open_editor', CURRENT_SETTINGS.get('pw_pending_open_editor', False)),
+                'pw_lock_on_close': lambda: p.getboolean('lock_on_close', CURRENT_SETTINGS.get('pw_lock_on_close', False)),
+                'pw_lock_after_time': lambda: p.getboolean('lock_after_time', CURRENT_SETTINGS.get('pw_lock_after_time', False)),
+                'pw_lock_timeout': lambda: p.getint('lock_timeout', CURRENT_SETTINGS.get('pw_lock_timeout', 3600)),
+            }
+            for key, reader in pw_readers.items():
+                try:
+                    CURRENT_SETTINGS[key] = reader()
+                except Exception:
+                    pass
+        if CURRENT_SETTINGS.get('language') != prev_lang:
+            try:
+                load_messages()
+                update_systray_menu()
+            except Exception:
+                pass
+    except Exception:
+        pass
 
 def load_builtin_styles():
     STYLES.clear()
@@ -386,10 +476,13 @@ DEFAULT_UI = {
     'AnimationSet': 'Animation Set', 'Language': 'Language', 'EditSettings': "Edit Program's Settings", 
     'EditConfig': 'Edit config.ini', 'OpenStyles': 'Open Styles Folder', 'OpenLangs': 'Open Languages Folder', 
     'OpenGlobal': 'Open Global Folder', 'OpenAnims': 'Open Animations Folder', 'Quit': 'Quit', 'About': 'About', 
-    'SavePosition': 'Save Position', 'Cancel': 'Cancel', 
+    'SavePosition': 'Save Position', 'Cancel': 'Cancel', 'Error': 'Error', 'Yes': 'Yes', 'No': 'No', 'CapsLockOn': 'Caps Lock is on!', 
     'PositionerInstructions': 'Click and drag to select the notification area\nPress Ctrl+Shift+R to reset to default',
     'CheckForUpdates': 'Check for Updates', 'AboutWindowTitle': "About eh's Clipboard",
     'AboutTab': 'About', 'UpdatesTab': 'Updates', 'LicenseTab': 'License', 'UpdateNow': 'Update Now',
+    'LicensesWindowTitle': 'Third-Party Licenses', 'LicensesHeader': "Third-party open source licenses used by eh's Clipboard",
+    'DeltaruneLicenseTitle': 'Deltarune Sounds', 'DeltaruneCopyright': 'Copyright (c) Toby Fox',
+    'DeltaruneLicenseBody': 'The Deltarune sounds, including Flowery\'s Voices and its sprite, and Spamton\'s sprites, included in Eh\'s Clipboard ("Official Builds by the source"), custom copies or forks of this program ("Forks"), or custom-built programs made for a machine or to add something ("Private Builds"), are part of DELTARUNE, which is owned by Toby Fox.',
     'ViewOnGitHub': 'View Release on GitHub', 'CheckingForUpdates': 'Checking for updates...',
     'UpdateInitialPrompt': "Press 'Check for Updates' to see if a new version is available.",
     'UpdateNewVersion': 'New version available: {latest_tag} (you are {behind} version(s) behind, running {current_version})',
@@ -401,7 +494,166 @@ DEFAULT_UI = {
     'UpdateNoReleases': 'No releases found.', 'DownloadPreparing': 'Preparing download...',
     'DownloadStatus': 'Downloading... {downloaded} / {total} ({speed}, ETA: {eta})',
     'DownloadComplete': 'Download complete. Starting installer...',
-    'DownloadInstallerFailed': 'Failed to run installer: {error}', 'DownloadFailedGeneric': 'Download failed: {error}'
+    'DownloadInstallerFailed': 'Failed to run installer: {error}', 'DownloadFailedGeneric': 'Download failed: {error}',
+    'Options': 'Options',
+    'OptionsWindowTitle': "eh's Clipboard Options",
+    'GeneralTab': 'General', 'PositionTab': 'Position', 'PrivacyTab': 'Privacy',
+    'XRuleLabel': 'X Rule', 'YRuleLabel': 'Y Rule', 'XValueLabel': 'X Value', 'YValueLabel': 'Y Value',
+    'PosAnchorLabel': 'Position Anchor',
+    'HideFromCapture': 'Hide Toast from being screenshotted',
+    'HideFromCaptureUnsupported': "This feature isn't for your version of Windows ({WindowsVer}), it requires the Windows 10 2020 Update (19041)",
+    'HelpStyle': 'The look of the toast notification.',
+    'HelpAnimationIn': 'Animation used when the toast appears.',
+    'HelpAnimationOut': 'Animation used when the toast disappears.',
+    'HelpXRule': 'The position of the X is calculated (default = near its right edge, absolute = fixed number of pixels, edge = distance from the right edge)',
+    'HelpYRule': 'The position of the Y is calculated (default = near the bottom, absolute = fixed number of pixels, edge = distance from its bottom)',
+    'HelpXValue': 'Value of the X Rule when it is absolute or edge',
+    'HelpYValue': 'Value of the Y Rule when it is absolute or edge',
+    'HelpPosAnchor': 'Corner or the edge where it stays fixed',
+    'HelpLanguage': 'Language used for the program interface.',
+    'HelpHideFromCapture': 'When on, the toast will be hidden from screenshots and screen recorders (when possible)',
+    'PasswordsSection': 'Passwords',
+    'PasswordsSetupTitle': 'Set up password vault',
+    'PasswordsVaultName': 'Password Vault',
+    'PasswordsWizardIntroTitle': "What's This?",
+    'PasswordsWizardIntroBody': 'The Password Vault is an option that allows you to hide your passwords from being shown on screen into the toast notification on screen by accident, either to someone, or to an capture or screen recording\n\nIt is easy, simply add the passwords, and it will hide it, that\'s it\n\nThe Password Vault itself is hidden from screenshots or screen recorders',
+    'PasswordsImportSourceTitle': 'Where do you import passwords?',
+    'PasswordsImportSourceSubtitle': 'Choose how you want the passwords to be setup',
+    'PasswordsImportFromBrowser': 'Import passwords from my browsers or a file',
+    'PasswordsImportNone': 'Do not import any password',
+    'PasswordsImportDetailsTitle': 'Importing passwords',
+    'PasswordsImportDetailsSubtitle': 'Choose how to import the passwords',
+    'PasswordsImportDetailsDesc': 'Choose where you want to import the passwords from',
+    'PasswordsImportSourceBrowser': 'Browser',
+    'PasswordsImportSourceFile': 'Via a file',
+    'PasswordsImportProfileLabel': 'Profile',
+    'PasswordsImportAllProfiles': 'All profiles',
+    'PasswordsImportFileLabel': 'Passwords file to import',
+    'PasswordsImportBrowse': 'Browse...',
+    'PasswordsImportFileFilter': 'CSV files (*.csv)',
+    'PasswordsImportNoBrowser': 'No supported browsers were found on this PC.',
+    'PasswordsAccessTitle': 'How do you access your vault?',
+    'PasswordsAccessSubtitle': 'Option to access your vault',
+    'PasswordsAccessDesc': 'Now you need to setup some option to access your vault!',
+    'PasswordsAccessMasterOnly': 'Master Password',
+    'PasswordsAccess2FA': '2FA Code',
+    'PasswordsMasterPageTitle': 'Master Password',
+    'PasswordsMasterPageSubtitle': 'Type your Master Password',
+    'PasswordsMasterPageHint': 'Your Master Password must be unique and not exactly the same as your passwords you use!',
+    'PasswordsMasterPageHint2': 'For the privacy, also, the password is not visible so choose something you will remember!',
+    'PasswordsMasterPassword': 'Master password',
+    'PasswordsMasterPasswordConfirm': 'Repeat master password',
+    'PasswordsPasswordTooShort': 'Master password must be at least 8 characters.',
+    'PasswordsPasswordMismatch': 'Passwords do not match.',
+    'PasswordsPasswordRepeat': 'Now repeat your master password',
+    'PasswordsPasswordMatches': 'Passwords match',
+    'PasswordsTOTPTitle': 'Set Up 2FA',
+    'PasswordsTOTPSubtitle': 'Use 2FA to unlock the vault',
+    'PasswordsTOTPInstructions': 'Scan the QR code or add the secret to your authenticator app (like Bitwarden or Google Authenticator) then type the code below:',
+    'PasswordsTOTPCodeLabel': 'Code:',
+    'PasswordsTOTPCodePlaceholder': 'Code',
+    'PasswordsTOTPValid': 'Code accepted!',
+    'PasswordsTOTPInvalid': 'That code is not valid, check the app and try again.',
+    'PasswordsVaultNameTitle': 'Your Vault Name',
+    'PasswordsVaultNameSubtitle': 'A Name for your Vault!',
+    'PasswordsVaultNameLabel': 'The Vault name is not necessary, but it gives you a little reminder if when setting up the 2FA codes',
+    'PasswordsVaultNamePlaceholder': 'Cool Vault...',
+    'PasswordsTOTPAccount': 'Vault for {vaultName}',
+    'PasswordsTOTPAccountFallback': 'User',
+    'PasswordsBackupCodesTitle': 'Your backup codes',
+    'PasswordsBackupCodesSubtitle': 'Save those!',
+    'PasswordsBackupCodesHint': 'Those are your backup codes for when you can\'t have access, make sure you save those securely! (Like a USB)',
+    'PasswordsBackupCodesNote': 'Those codes can be used once (15 each)',
+    'PasswordsBackupCodesDone': 'I saved them',
+    'PasswordsBackupCodesSave': 'Save codes to a file',
+    'PasswordsBackupCodesFileTitle': 'Save backup codes',
+    'PasswordsBackupCodesFile': 'Those are your backup codes for accessing your {vaultName} vault, make sure those are entirely safe! {codes}',
+    'PasswordsBackupCodesSaveFailed': 'Could not save the file.',
+    'PasswordsImportConfirmTitle': 'Import passwords?',
+    'PasswordsImportConfirm': 'Import {count} {passwords} into your vault?',
+    'PasswordsWordOne': 'password',
+    'PasswordsWordMany': 'passwords',
+    'PasswordsSetupCreate': 'Create Vault',
+    'PasswordsUnlockTitle': 'Unlock your vault',
+    'PasswordsUnlockMasterLabel': 'Type your master password to unlock your vault',
+    'PasswordsUnlockTOTPLabel': 'Type your 2FA code to unlock your vault',
+    'PasswordsUnlockBackupLabel': 'Type your backup code to unlock your vault',
+    'PasswordsForgotThatOne': 'Forgot that one?',
+    'PasswordsUnlockTOTPButton': '2FA Code',
+    'PasswordsUnlockBackupButton': 'Backup code',
+    'PasswordsBackupCodePlaceholder': 'Backup code',
+    'PasswordsNoBackupCodes': 'No backup codes left.',
+    'PasswordsUnlockButton': 'Unlock',
+    'PasswordsWrongPassword': 'Wrong master password.',
+    'PasswordsWrongTOTP': 'Wrong 2FA code.',
+    'PasswordsWrongBackup': 'That backup code does not match, or was already used.',
+    'PasswordsBackupCodesLeft': '{count} backup {codes} left.',
+    'PasswordsBackupCodeWordOne': 'code',
+    'PasswordsBackupCodeWordMany': 'codes',
+    'PasswordsRegenerateBackupCodes': 'Regenerate backup codes',
+    'PasswordsRegenerateTitle': 'Regenerate backup codes',
+    'PasswordsRegenerateConfirmTitle': 'Regenerate backup codes?',
+    'PasswordsRegenerateConfirmBody': 'This will change your backup codes to new ones and makes your other ones invalid, are you sure?',
+    'PasswordsRegenerateTOTPLabel': 'Type your 2FA code to continue',
+    'PasswordsTOTPCode': '2FA code',
+    'PasswordsOpenEditor': 'Open passwords',
+    'PasswordsLockVault': 'Lock vault',
+    'PasswordsChangeMaster': 'Change master password',
+    'PasswordsChangeMasterTitle': 'Change master password',
+    'PasswordsChangeMasterHint': 'Type your current master password, then set a new one',
+    'PasswordsChangeMasterOld': 'Current master password',
+    'PasswordsChangeMasterNew': 'New master password',
+    'PasswordsChangeMasterRepeat': 'Repeat new master password',
+    'PasswordsChangeMasterButton': 'Change',
+    'PasswordsChangeMasterEnterOld': 'Type your current master password first.',
+    'PasswordsChangeMasterDoneTitle': 'Changed',
+    'PasswordsChangeMasterDone': 'Your master password was changed.',
+    'PasswordsDisable': 'Disable vault',
+    'PasswordsHideFromToast': 'Hide passwords from the toast',
+    'PasswordsShowOnHover': 'Reveal passwords when hovering the toast',
+    'PasswordsHideFromCapture': 'Hide passwords from being captured',
+    'PasswordsLockOnClose': 'Lock your vault right after you close it',
+    'PasswordsLockAfterTime': 'Lock your vault after a certain time',
+    'PasswordsLockDuration': 'Auto-lock after',
+    'PasswordsLockTime1Hour': '1 Hour',
+    'PasswordsLockTime5Hours': '5 Hours',
+    'PasswordsLockTime8Hours': '8 Hours',
+    'PasswordsLockTime1Day': '1 Day',
+    'PasswordsLockTime5Days': '5 Days',
+    'PasswordsLockTime1Week': '1 Week',
+    'HelpPasswordsHideToast': 'When on, any password stored in your vault is hidden when it shows up on the toast',
+    'HelpPasswordsShowOnHover': 'When on, hovering the toast reveals the hidden passwords for a few seconds',
+    'HelpPasswordsHideFromCapture': 'When on, the vault windows are hidden from screenshots and screen recorders (when possible)',
+    'HelpPasswordsLockOnClose': 'Simply lock the vault the moment you close that',
+    'HelpPasswordsLockAfterTime': 'Lock the vault after a certain time the moment it is unlocked',
+    'HelpPasswordsLockDuration': 'How long the vault stays unlocked before it locks by itself',
+    'HelpPasswordsOpenEditor': 'Opens your vault to add, edit, delete or import passwords',
+    'HelpPasswordsDisable': 'Deletes your vault permanently!',
+    'PasswordsDisableVaultTitle': 'Disable your vault?',
+    'PasswordsDisableVaultMessage': 'Disabling your vault means deleting, so all of your {count} {passwords} will be gone forever! Are you sure you gonna do this?',
+    'PasswordsShowSecret': 'Show secret',
+    'PasswordsCopySecret': 'Copy secret',
+    'PasswordsOpenAuthLink': 'Open authenticator link',
+    'PasswordsAppName': "Eh's Clipboard",
+    'PasswordsEntryDialogTitle': 'Password entry',
+    'PasswordsEntryName': 'Name',
+    'PasswordsEntryUsername': 'Username',
+    'PasswordsEntryPassword': 'Password',
+    'PasswordsShowPassword': 'Show password',
+    'PasswordsEntryHideCapture': 'Hide this password from being captured',
+    'PasswordsSave': 'Save',
+    'PasswordsEmptyName': 'Name cannot be empty.',
+    'PasswordsEditorTitle': 'Passwords',
+    'PasswordsSearchPlaceholder': 'Search...',
+    'PasswordsAdd': 'Add',
+    'PasswordsImportButton': 'Import',
+    'PasswordsImportNothing': 'No passwords to import.',
+    'PasswordsEdit': 'Edit',
+    'PasswordsDelete': 'Delete',
+    'PasswordsEmpty': 'No entries yet.',
+    'PasswordsDeleteConfirmTitle': 'Delete entry',
+    'PasswordsDeleteConfirmBody': 'Delete this entry?',
+    'OK': 'OK'
 }
 UI = DEFAULT_UI.copy()
 
@@ -448,7 +700,96 @@ def set_os_language_on_first_run():
     except Exception:
         pass
 
+def _sha256_file(path):
+    h = hashlib.sha256()
+    try:
+        with open(path, 'rb') as f:
+            for chunk in iter(lambda: f.read(65536), b''):
+                h.update(chunk)
+    except Exception:
+        return ''
+    return h.hexdigest()
+
+
+def _parse_seed_ver(path):
+    manifest = {}
+    try:
+        with open(path, 'r', encoding='utf-8') as f:
+            for line in f:
+                line = line.strip()
+                if not line or line.startswith('[') or '=' not in line:
+                    continue
+                key, _, value = line.partition('=')
+                manifest[key.strip()] = value.strip().lower()
+    except Exception:
+        pass
+    return manifest
+
+
+def _write_seed_ver(path, manifest):
+    try:
+        lines = ['[seed-ver]']
+        lines.extend('{} = {}'.format(k, v) for k, v in manifest.items())
+        with open(path, 'w', encoding='utf-8') as f:
+            f.write('\n'.join(lines) + '\n')
+    except Exception:
+        pass
+
+
+def eh_msix_default_files():
+    if not IS_MSIX:
+        return
+    try:
+        if getattr(sys, 'frozen', False):
+            exe_path = sys.executable
+        else:
+            exe_path = os.path.abspath(__file__)
+        pkg_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(exe_path))))
+        src = os.path.join(pkg_root, "Defaults", "eh's Clipboard")
+        seed_ver = os.path.join(src, '.seed-ver')
+        if not os.path.isfile(seed_ver):
+            return
+        desired = _parse_seed_ver(seed_ver)
+        if not desired:
+            return
+        stored_path = os.path.join(APP_DATA_PATH, '.seed-ver')
+        stored = _parse_seed_ver(stored_path)
+        migrated = not os.path.exists(stored_path)
+        os.makedirs(APP_DATA_PATH, exist_ok=True)
+        new_manifest = {}
+        changed = migrated
+        for key, value in desired.items():
+            if key in ('program_sha256', 'folder_sha256'):
+                new_manifest[key] = value
+                continue
+            s = os.path.join(src, *key.split('/'))
+            d = os.path.join(APP_DATA_PATH, *key.split('/'))
+            if not os.path.isfile(s):
+                continue
+            prev = stored.get(key)
+            replace = False
+            if not os.path.exists(d):
+                replace = True
+            elif migrated:
+                replace = True
+            elif prev and _sha256_file(d) == prev:
+                replace = True
+            if replace:
+                try:
+                    os.makedirs(os.path.dirname(d), exist_ok=True)
+                    shutil.copy2(s, d)
+                    changed = True
+                except Exception:
+                    pass
+            new_manifest[key] = value
+        if changed:
+            _write_seed_ver(stored_path, new_manifest)
+    except Exception:
+        pass
+
+
 def ensure_default_files():
+    eh_msix_default_files()
     os.makedirs(APP_DATA_PATH, exist_ok=True)
 
     if not os.path.exists(CONFIG_FILE):
@@ -702,8 +1043,125 @@ def calculate_position(w, h):
     x = x_anchor if 'w' in anchor else x_anchor - w
     return int(x), int(y)
 
+def set_hide_from_capture(window, force=False):
+    try:
+        user32 = ctypes.WinDLL("user32")
+        hwnd = user32.GetAncestor(window.winfo_id(), 2)
+        affinity = 0x11 if (force or CURRENT_SETTINGS.get('hide_from_capture')) else 0x0
+        user32.SetWindowDisplayAffinity(hwnd, affinity)
+    except Exception:
+        pass
+
+def _pw_swap_text_widget(widget, find, repl):
+    try:
+        if isinstance(widget, tk.Label):
+            t = widget.cget('text')
+            if find in t:
+                widget.configure(text=t.replace(find, repl))
+        elif isinstance(widget, ScrolledText):
+            widget.config(state=tk.NORMAL)
+            content = widget.get('1.0', 'end')
+            widget.delete('1.0', 'end')
+            widget.insert('1.0', content.replace(find, repl))
+            widget.config(state=tk.DISABLED)
+    except Exception:
+        pass
+
+def _pw_swap_in_frame(frame, find, repl):
+    try:
+        for child in frame.winfo_children():
+            _pw_swap_text_widget(child, find, repl)
+            _pw_swap_in_frame(child, find, repl)
+    except Exception:
+        pass
+
+def _pw_should_hide_capture():
+    try:
+        if CURRENT_SETTINGS.get('pw_hide_from_capture', True):
+            return True
+        entries = passwords.session_entries()
+        revealed = {pw for _, pw in getattr(toast, '_pw_reveal', [])}
+        return any(e.get('hide_capture', True) and e.get('password') in revealed for e in entries)
+    except Exception:
+        return False
+
+def _pw_resize_to_fit():
+    try:
+        if toast is None or not toast.winfo_exists():
+            return
+        def _first_text_widget(w):
+            for c in w.winfo_children():
+                if isinstance(c, tk.Label) or isinstance(c, ScrolledText):
+                    return c
+                r = _first_text_widget(c)
+                if r:
+                    return r
+            return None
+        widget = _first_text_widget(toast._pw_frame)
+        if widget is None or not isinstance(widget, tk.Label):
+            return
+        max_w_long = int(screen_width * 0.6)
+        widget.config(wraplength=0)
+        toast.update_idletasks()
+        w_new = min(widget.winfo_reqwidth() + 20, max_w_long)
+        widget.config(wraplength=0 if w_new < max_w_long else w_new - 20)
+        toast.update_idletasks()
+        h_new = widget.winfo_reqheight() + 10
+        if (w_new, h_new) != (toast.winfo_width(), toast.winfo_height()):
+            animate_resize(toast, w_new, h_new)
+    except Exception:
+        pass
+
+def reveal_passwords():
+    try:
+        if toast is None or not toast.winfo_exists():
+            return
+        if not getattr(toast, '_pw_hover', False) or getattr(toast, '_pw_visible', False):
+            return
+        toast._pw_visible = True
+        for block, pw in toast._pw_reveal:
+            _pw_swap_in_frame(toast._pw_frame, block, pw)
+        _pw_resize_to_fit()
+        if _pw_should_hide_capture():
+            set_hide_from_capture(toast, force=True)
+    except Exception:
+        pass
+
+def remask_passwords():
+    try:
+        if toast is None or not toast.winfo_exists():
+            return
+        if not getattr(toast, '_pw_visible', False):
+            return
+        toast._pw_visible = False
+        for block, pw in reversed(toast._pw_reveal):
+            _pw_swap_in_frame(toast._pw_frame, pw, block)
+        set_hide_from_capture(toast)
+        _pw_resize_to_fit()
+    except Exception:
+        pass
+
 def show_toast(text):
     global toast, fade_out_job
+    refresh_settings_from_disk()
+    pw_reveal = []
+    if passwords.is_unlocked() and CURRENT_SETTINGS.get('pw_hide_from_toast', True):
+        try:
+            entries = [e for e in passwords.session_entries() if e.get('hide_capture', True)]
+            if entries:
+                masked, reveal = passwords.mask_text_detailed(text, entries)
+                if reveal:
+                    text = masked
+                    pw_reveal = reveal
+        except Exception:
+            pw_reveal = []
+    global _pw_mask_broken_notice
+    if _pw_mask_broken_notice and not passwords.is_unlocked() and CURRENT_SETTINGS.get('pw_hide_from_toast', True):
+        _pw_mask_broken_notice = False
+        show_error_messagebox(
+            "The program threw an error!",
+            "Open your vault once so the passwords can be hidden again"
+        )
     if fade_out_job:
         try: root.after_cancel(fade_out_job)
         except Exception: pass
@@ -715,11 +1173,16 @@ def show_toast(text):
         toast.attributes("-toolwindow", 1)
 
     for widget in toast.winfo_children(): widget.destroy()
+    toast._pw_reveal = pw_reveal
+    toast._pw_visible = False
+    toast._pw_hover = False
+    toast._pw_job = None
     style_name = CURRENT_SETTINGS.get('style', 'Default Dark')
     style_look = STYLES.get(style_name, STYLES['Default Dark'])['look']
     toast.config(bg=style_look['border'])
     content_frame = tk.Frame(toast, bg=style_look['bg'])
     content_frame.pack(padx=1, pady=1, fill=tk.BOTH, expand=True)
+    toast._pw_frame = content_frame
 
     lines = text.splitlines()
     is_multiline, is_long = len(lines) > 1, not (len(lines) > 1) and len(text) > 20
@@ -766,6 +1229,14 @@ def show_toast(text):
         global fade_out_job
         if fade_out_job: root.after_cancel(fade_out_job); fade_out_job = None
         if hover_state['job']: root.after_cancel(hover_state['job']); hover_state['job'] = None
+        toast._pw_hover = True
+        if toast._pw_job:
+            try: root.after_cancel(toast._pw_job)
+            except Exception: pass
+            toast._pw_job = None
+        if CURRENT_SETTINGS.get('pw_show_on_hover') and toast._pw_reveal and not getattr(toast, '_pw_visible', False):
+            delay = max(0, int(CURRENT_SETTINGS.get('pw_hover_seconds', 2))) * 1000
+            toast._pw_job = root.after(delay, reveal_passwords)
         if not is_truncated or hover_state['is_expanded']: return
         hover_state['is_expanded'] = True
         for widget in content_frame.winfo_children(): widget.destroy()
@@ -790,6 +1261,12 @@ def show_toast(text):
 
     def on_leave(event):
         global fade_out_job
+        toast._pw_hover = False
+        if toast._pw_job:
+            try: root.after_cancel(toast._pw_job)
+            except Exception: pass
+            toast._pw_job = None
+        remask_passwords()
         if not is_truncated:
             x_pos, y_pos = calculate_position(w_small, h_small)
             fade_out_job = root.after(3000, lambda: anim_out_func(toast, w_small, h_small, x_pos, y_pos))
@@ -800,6 +1277,8 @@ def show_toast(text):
     x, y = calculate_position(w_small, h_small)
     toast.geometry(f"{w_small}x{h_small}+{x}+{y}")
     toast.attributes("-alpha", 0); toast.deiconify()
+    toast.update_idletasks()
+    set_hide_from_capture(toast, force=bool(pw_reveal) and _pw_should_hide_capture())
     anim_in_name = CURRENT_SETTINGS.get('animation_in')
     anim_in_func = ANIMATIONS_IN.get(anim_in_name, an_fade_in)
     p_in = CUSTOM_ANIM_PARAMS.get(anim_in_name)
@@ -811,17 +1290,52 @@ def show_toast(text):
         anim_in_func = _wrapped_in
     anim_in_func(toast, w_small, h_small, x, y)
     fade_out_job = root.after(3000, lambda: anim_out_func(toast, w_small, h_small, x, y))
+    _pw_capture_force = bool(pw_reveal) and _pw_should_hide_capture()
+    set_hide_from_capture(toast, force=_pw_capture_force)
+    root.after(50, lambda: set_hide_from_capture(toast, force=_pw_capture_force))
+
+def apply_external_changes():
+    try:
+        refresh_settings_from_disk()
+        load_languages()
+        update_systray_menu()
+        global toast
+        if toast is not None:
+            try:
+                if toast.winfo_exists():
+                    set_hide_from_capture(toast)
+            except Exception:
+                pass
+        if CURRENT_SETTINGS.get('pw_pending_open_editor'):
+            CURRENT_SETTINGS['pw_pending_open_editor'] = False
+            save_config()
+            open_passwords_threaded(UI)
+        try:
+            if passwords.is_unlocked() and not os.path.exists(passwords.vault_file_path(APP_DATA_PATH)):
+                passwords.clear_session()
+                passwords.clear_mask_key(APP_DATA_PATH)
+        except Exception:
+            pass
+    except Exception:
+        pass
 
 def monitor_clipboard():
     global last_text
     try: last_text = pyperclip.paste()
     except Exception: last_text = ""
+    last_config_mtime = os.path.getmtime(CONFIG_FILE) if os.path.exists(CONFIG_FILE) else None
     while True:
         try:
             current_text = pyperclip.paste()
             if current_text != last_text and current_text.strip() != "":
                 last_text = current_text
                 root.after(0, show_toast, current_text)
+        except Exception: pass
+        try:
+            mtime = os.path.getmtime(CONFIG_FILE) if os.path.exists(CONFIG_FILE) else None
+            if mtime != last_config_mtime:
+                last_config_mtime = mtime
+                root.after(0, apply_external_changes)
         except Exception: pass
         time.sleep(0.1)
 
@@ -858,6 +1372,339 @@ def open_about_threaded(ui_dict):
         except Exception:
             pass
 
+def open_options_threaded(ui_dict):
+    import tempfile, json
+    try:
+        load_builtin_styles()
+        load_styles_from_folder()
+        load_languages()
+    except Exception:
+        pass
+    payload = {
+        'ui': ui_dict or {},
+        'config_file': CONFIG_FILE,
+        'styles': sorted(STYLES.keys()),
+        'anims_in': list(ANIMATIONS_IN.keys()),
+        'anims_out': list(ANIMATIONS_OUT.keys()),
+        'langs': dict(LANGS),
+        'anchors': ['se', 'sw', 'ne', 'nw', 'n', 's', 'e', 'w'],
+        'vault': passwords.vault_file_path(APP_DATA_PATH),
+        'vault_count': len(passwords.session_entries()) if passwords.is_unlocked() else 0,
+    }
+    try:
+        tf = tempfile.NamedTemporaryFile(delete=False, suffix='.json', mode='w', encoding='utf-8')
+        json.dump(payload, tf)
+        tf.close()
+    except Exception:
+        return
+
+    if getattr(sys, 'frozen', False):
+        try:
+            subprocess.Popen([sys.executable, "options", tf.name], close_fds=True)
+        except Exception:
+            pass
+    else:
+        try:
+            subprocess.Popen([sys.executable, os.path.join(BASE_PATH, 'options_qt.py'), tf.name], close_fds=True)
+        except Exception:
+            pass
+
+def _get_requesting_program():
+    try:
+        return sys.executable
+    except Exception:
+        return ''
+
+def _ask_intruder_qt(pid, filepath, exe_path=None):
+    try:
+        import tempfile, json
+        status_file = tempfile.mkstemp(suffix='.intr')[1]
+        payload = {
+            'mode': 'pw_intruder',
+            'ui': UI,
+            'vault': passwords.vault_file_path(APP_DATA_PATH),
+            'config_file': CONFIG_FILE,
+            'intruder_pid': pid,
+            'intruder_file': filepath,
+            'intruder_path': exe_path or '',
+            'status_file': status_file,
+        }
+        tf = tempfile.NamedTemporaryFile(delete=False, suffix='.json', mode='w', encoding='utf-8')
+        json.dump(payload, tf)
+        tf.close()
+        if getattr(sys, 'frozen', False):
+            cmd = [sys.executable, 'pw_intruder', tf.name]
+        else:
+            cmd = [sys.executable, os.path.join(BASE_PATH, 'passwords_qt.py'), tf.name]
+        proc = subprocess.Popen(cmd, close_fds=True)
+        proc.wait(timeout=120)
+        decision = 'deny'
+        if os.path.exists(status_file):
+            try:
+                with open(status_file, 'rb') as f:
+                    raw = f.read().decode('utf-8', errors='replace').strip()
+                if raw:
+                    decision = raw
+            except Exception:
+                pass
+        for p in (tf.name, status_file):
+            try:
+                if os.path.exists(p):
+                    os.remove(p)
+            except Exception:
+                pass
+        return decision
+    except Exception:
+        return 'deny'
+
+def _start_vault_guard(root):
+    try:
+        from sesv_guard import create_vault_guard
+        vault_path = passwords.vault_file_path(APP_DATA_PATH)
+        if not os.path.exists(vault_path):
+            return None
+        clip_dir = os.path.dirname(os.path.dirname(vault_path))
+        guard = create_vault_guard(clip_dir)
+        queue = __import__('queue').Queue()
+        shown = set()
+
+        def on_intrusion(pid, filepath, reason):
+            queue.put((pid, filepath, reason))
+            return "pending"
+
+        guard.on_intrusion = on_intrusion
+        guard.start()
+
+        def poll():
+            try:
+                while not queue.empty():
+                    pid, filepath, reason = queue.get()
+                    if pid in shown:
+                        continue
+                    shown.add(pid)
+                    exe_path = ''
+                    try:
+                        exe_path = psutil.Process(pid).exe()
+                    except Exception:
+                        pass
+                    decision = _ask_intruder_qt(pid, filepath, exe_path)
+                    if decision == 'approve':
+                        guard.approve_pid(pid)
+                    else:
+                        guard.deny_pid(pid)
+            except Exception:
+                pass
+            root.after(150, poll)
+
+        root.after(150, poll)
+        return guard
+    except Exception:
+        return None
+
+def _run_password_subprocess(mode, ui_dict, key=None):
+    import tempfile, json
+    payload = {
+        'mode': mode,
+        'ui': ui_dict or {},
+        'vault': passwords.vault_file_path(APP_DATA_PATH),
+        'config_file': CONFIG_FILE,
+        'requesting_program': _get_requesting_program(),
+    }
+    tf = None
+    key_file = None
+    status_file = None
+    try:
+        tf = tempfile.NamedTemporaryFile(delete=False, suffix='.json', mode='w', encoding='utf-8')
+        if mode == 'pw_editor' and key:
+            key_file = tempfile.NamedTemporaryFile(delete=False, suffix='.key', mode='wb')
+            key_file.write(key)
+            key_file.close()
+            payload['key_file'] = key_file.name
+        elif mode in ('pw_setup', 'pw_unlock'):
+            key_file = tempfile.NamedTemporaryFile(delete=False, suffix='.key', mode='wb')
+            key_file.close()
+            payload['key_file'] = key_file.name
+        status_file = tempfile.NamedTemporaryFile(delete=False, suffix='.lock', mode='wb')
+        status_file.close()
+        payload['status_file'] = status_file.name
+        json.dump(payload, tf)
+        tf.close()
+    except Exception:
+        for f in (tf, key_file, status_file):
+            try:
+                if f is not None and os.path.exists(f.name):
+                    os.remove(f.name)
+            except Exception:
+                pass
+        return None
+
+    if getattr(sys, 'frozen', False):
+        cmd = [sys.executable, mode, tf.name]
+    else:
+        cmd = [sys.executable, os.path.join(BASE_PATH, 'passwords_qt.py'), tf.name]
+    try:
+        proc = subprocess.Popen(cmd, close_fds=True)
+        try:
+            out, _err = proc.communicate()
+        except Exception:
+            out = b''
+        if key_file and os.path.exists(key_file.name):
+            try:
+                with open(key_file.name, 'rb') as f:
+                    raw = f.read()
+            except Exception:
+                raw = b''
+        else:
+            raw = b''
+        if mode == 'pw_editor' and (b'LOCKED' in (out or b'')):
+            try:
+                passwords.lock_session()
+            except Exception:
+                pass
+            _cancel_pw_lock()
+        if status_file and os.path.exists(status_file.name):
+            try:
+                with open(status_file.name, 'rb') as f:
+                    status_data = f.read()
+                if b'LOCKED' in status_data:
+                    try:
+                        passwords.lock_session()
+                    except Exception:
+                        pass
+                    _cancel_pw_lock()
+            except Exception:
+                pass
+        if mode in ('pw_setup', 'pw_unlock') and raw and len(raw) == passwords.KEY_LENGTH:
+            return raw
+    except Exception:
+        pass
+    finally:
+        for f in (tf, key_file, status_file):
+            try:
+                if f is not None and os.path.exists(f.name):
+                    os.remove(f.name)
+            except Exception:
+                pass
+    return None
+
+def _set_password_session(vault, key):
+    def _do():
+        try:
+            global _pw_mask_broken_notice
+            _pw_mask_broken_notice = False
+            passwords.set_session(key, passwords.decrypt_vault_with_key(vault, key))
+            passwords.save_mask_key(APP_DATA_PATH, key)
+            _pw_reschedule_lock()
+        except Exception:
+            passwords.clear_session()
+    try:
+        root.after(0, _do)
+    except Exception:
+        _do()
+
+def _restore_mask_session():
+    try:
+        if passwords.is_unlocked():
+            return
+        vault = passwords.vault_file_path(APP_DATA_PATH)
+        if not os.path.exists(vault):
+            if os.path.exists(passwords.mask_key_cache_path(APP_DATA_PATH)):
+                try:
+                    raise FileNotFoundError(
+                        "No such file: {0}".format(passwords.vault_file_path(APP_DATA_PATH))
+                    )
+                except FileNotFoundError as e:
+                    traceback_text = "".join(traceback.format_exception(type(e), e, e.__traceback__))
+                show_error_messagebox(
+                    "The program threw an error!",
+                    "We aren't able to find the vault, where did you just put at?\n\nTechnical details:\n{0}".format(
+                        traceback_text
+                    )
+                )
+            return
+        try:
+            key = passwords.load_mask_key(APP_DATA_PATH)
+        except passwords.MaskKeyDecryptError as e:
+            traceback_text = "".join(traceback.format_exception(type(e), e, e.__traceback__))
+            show_error_messagebox(
+                "The program threw an error!",
+                "We are not able to decrypt ({0}), did you change your password in some special way?\n\nTechnical details:\n{1}".format(
+                    getattr(e, 'args', (None,))[0] or passwords.mask_key_cache_path(APP_DATA_PATH),
+                    traceback_text
+                )
+            )
+            passwords.clear_mask_key(APP_DATA_PATH)
+            global _pw_mask_broken_notice
+            _pw_mask_broken_notice = True
+            return
+        if not key:
+            return
+        passwords.set_session(None, passwords.decrypt_vault_with_key(passwords.vault_file_path(APP_DATA_PATH), key))
+    except Exception:
+        try:
+            passwords.clear_session()
+        except Exception:
+            pass
+
+_pw_lock_timer = None
+
+def _pw_do_lock():
+    global _pw_lock_timer
+    _pw_lock_timer = None
+    try:
+        passwords.lock_session()
+    except Exception:
+        pass
+
+def _cancel_pw_lock():
+    global _pw_lock_timer
+    if _pw_lock_timer is not None:
+        try:
+            _pw_lock_timer.cancel()
+        except Exception:
+            pass
+_pw_lock_timer = None
+_pw_mask_broken_notice = False
+
+def _pw_reschedule_lock():
+    global _pw_lock_timer
+    _cancel_pw_lock()
+    if not CURRENT_SETTINGS.get('pw_lock_after_time', False):
+        return
+    try:
+        timeout = max(0, int(CURRENT_SETTINGS.get('pw_lock_timeout', 3600)))
+    except Exception:
+        timeout = 3600
+    if timeout <= 0:
+        return
+    _pw_lock_timer = threading.Timer(timeout, _pw_do_lock)
+    _pw_lock_timer.daemon = True
+    _pw_lock_timer.start()
+
+def _passwords_flow(ui_dict):
+    try:
+        vault = passwords.vault_file_path(APP_DATA_PATH)
+        key = passwords.session_key()
+        if not key:
+            if os.path.exists(vault):
+                key = _run_password_subprocess('pw_unlock', ui_dict)
+            else:
+                key = _run_password_subprocess('pw_setup', ui_dict)
+            if not key:
+                return
+            _set_password_session(vault, key)
+        _run_password_subprocess('pw_editor', ui_dict, key=key)
+        if CURRENT_SETTINGS.get('pw_lock_on_close', False):
+            passwords.lock_session()
+            _cancel_pw_lock()
+        elif passwords.session_key():
+            _set_password_session(vault, passwords.session_key())
+    except Exception:
+        pass
+
+def open_passwords_threaded(ui_dict):
+    threading.Thread(target=_passwords_flow, args=(ui_dict,), daemon=True).start()
+
 def update_systray_menu():
     global app_icon
     styles_dir = os.path.join(APP_DATA_PATH, 'Styles')
@@ -887,7 +1734,7 @@ def update_systray_menu():
             def create_action(a): return lambda icon, item: (CURRENT_SETTINGS.update(a), save_config(), update_systray_menu())
             yield item(name, create_action(anim_set), checked=lambda item, a=anim_set: CURRENT_SETTINGS['animation_in'] == a['animation_in'] and CURRENT_SETTINGS['animation_out'] == a['animation_out'], radio=True)
 
-    settings_menu = [item(UI.get('EditConfig'), lambda: open_path(CONFIG_FILE)), pystray.Menu.SEPARATOR, item(UI.get('OpenStyles'), lambda: open_path(styles_dir)), item(UI.get('OpenLangs'), lambda: open_path(lang_dir)), item(UI.get('OpenAnims'), lambda: open_path(anim_dir)), item(UI.get('OpenGlobal'), lambda: open_path(APP_DATA_PATH))]
+    settings_menu = [item(UI.get('EditConfig'), lambda: open_path(CONFIG_FILE)), item(UI.get('Options'), lambda: open_options_threaded(UI)), pystray.Menu.SEPARATOR, item(UI.get('OpenStyles'), lambda: open_path(styles_dir)), item(UI.get('OpenLangs'), lambda: open_path(lang_dir)), item(UI.get('OpenAnims'), lambda: open_path(anim_dir)), item(UI.get('OpenGlobal'), lambda: open_path(APP_DATA_PATH))]
     
     menu_items = (
         item(UI.get('SetPosition'), lambda: open_positioner()),
@@ -904,9 +1751,40 @@ def update_systray_menu():
     )
     if app_icon: app_icon.menu = pystray.Menu(*menu_items)
 
+def _patch_tray_menu_foreground(icon):
+    try:
+        handlers = getattr(icon, '_message_handlers', None)
+        if not handlers:
+            return
+        orig = handlers.get(0x040B)
+        if orig is None:
+            return
+
+        def wrapped(wparam, lparam):
+            try:
+                if lparam == 0x0205:
+                    hwnd = getattr(icon, '_hwnd', None)
+                    if hwnd:
+                        user32 = ctypes.WinDLL("user32", use_last_error=True)
+                        user32.SetForegroundWindow(hwnd)
+                        user32.SetWindowPos(
+                            hwnd, -1, 0, 0, 0, 0, 0x0001 | 0x0002 | 0x0010
+                        )
+                        user32.SetForegroundWindow(hwnd)
+            except Exception:
+                pass
+            return orig(wparam, lparam)
+
+        handlers[0x040B] = wrapped
+    except Exception:
+        pass
+
+
 def setup_tray_and_monitoring(icon):
     global app_icon; app_icon = icon; icon.visible = True
+    _patch_tray_menu_foreground(icon)
     update_systray_menu()
+    _restore_mask_session()
     threading.Thread(target=monitor_clipboard, daemon=True).start()
 
 def open_positioner(): PositionerWindow(root, app_photo_icon)
@@ -974,7 +1852,7 @@ class PositionerWindow(tk.Toplevel):
         save_config(); self.destroy()
 
 def main():
-    global root, screen_width, screen_height, app_photo_icon
+    global root, screen_width, screen_height, app_photo_icon, VAULT_GUARD
     register_app_user_model_id()
     set_app_user_model_id()
     root = tk.Tk(); root.withdraw()
@@ -1000,11 +1878,21 @@ def main():
             root.after(250, check_quit_flag)
     
     check_quit_flag()
+    try:
+        VAULT_GUARD = _start_vault_guard(root)
+    except Exception:
+        VAULT_GUARD = None
     threading.Thread(target=lambda: icon.run(setup=setup_tray_and_monitoring), daemon=True).start()
     root.mainloop()
 
 if __name__ == "__main__":
-    if len(sys.argv) > 1 and sys.argv[1] == "about":
+    if len(sys.argv) > 2 and sys.argv[1] == "playsound":
+        try:
+            import winsound
+            winsound.PlaySound(sys.argv[2], winsound.SND_FILENAME | winsound.SND_NODEFAULT)
+        except Exception:
+            pass
+    elif len(sys.argv) > 1 and sys.argv[1] == "about":
         try:
             import json
             import about_qt
@@ -1018,6 +1906,48 @@ if __name__ == "__main__":
                     pass
             
             about_qt.show_about_dialog(ui_data, None)
+        except Exception:
+            pass
+    elif len(sys.argv) > 1 and sys.argv[1] == "options":
+        try:
+            import json
+            import options_qt
+            
+            data = {}
+            if len(sys.argv) > 2 and os.path.exists(sys.argv[2]):
+                try:
+                    with open(sys.argv[2], 'r', encoding='utf-8') as f:
+                        data = json.load(f)
+                except Exception:
+                    pass
+            
+            options_qt.show_options_dialog(
+                data.get('ui', {}),
+                data.get('config_file', ''),
+                data.get('styles', []),
+                data.get('anims_in', []),
+                data.get('anims_out', []),
+                data.get('langs', {}),
+                data.get('anchors', []),
+                data.get('vault', ''),
+                int(data.get('vault_count') or 0),
+            )
+        except Exception:
+            pass
+    elif len(sys.argv) > 2 and sys.argv[1] in ("pw_setup", "pw_unlock", "pw_editor", "pw_intruder"):
+        try:
+            import json
+            import passwords_qt
+
+            data = {}
+            if os.path.exists(sys.argv[2]):
+                try:
+                    with open(sys.argv[2], 'r', encoding='utf-8') as f:
+                        data = json.load(f)
+                except Exception:
+                    pass
+
+            passwords_qt.run_mode(sys.argv[1], data)
         except Exception:
             pass
     else:

@@ -48,7 +48,7 @@ git clone https://github.com/huhuhuhuheh/ehclipboard.git
 
 After forking the repo and then going to the directory, install the depdencies on your terminal before running:
 ```
-pip install pyperclip pystray Pillow PySide6 winotify winsdk
+pip install pyperclip pystray Pillow PySide6 winotify cryptography pefile psutil signify python-dotenv pywin32 qrcode installed-browsers
 ```
 
 And finally run the script with:
