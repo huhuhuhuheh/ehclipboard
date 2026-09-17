@@ -784,6 +784,38 @@ class BackupCodesPage(QWizardPage):
         return -1
 
 
+class Setup2FAWizard(QWizard):
+    PAGE_VAULT_NAME = 0
+    PAGE_TOTP = 1
+    PAGE_BACKUP = 2
+
+    def __init__(self, ui):
+        super().__init__()
+        self.ui = ui
+        self.totp_secret = None
+        self.backup_codes = None
+        self.vault_name = None
+
+        self.setWindowTitle(ui.get('PasswordsSetup2FATitle', 'Set up 2FA'))
+        self.setWindowModality(Qt.ApplicationModal)
+        self.setWizardStyle(QWizard.ModernStyle)
+        self.setButtonText(QWizard.FinishButton, ui.get('PasswordsSetup2FAEnable', 'Enable 2FA'))
+        self.setButtonText(QWizard.NextButton, ui.get('Next', 'Next'))
+        self.setButtonText(QWizard.BackButton, ui.get('Back', 'Back'))
+        self.setButtonText(QWizard.CancelButton, ui.get('Cancel', 'Cancel'))
+        self.resize(640, 560)
+
+        self.setPage(self.PAGE_VAULT_NAME, VaultNamePage(self))
+        self.setPage(self.PAGE_TOTP, TotpPage(self))
+        self.setPage(self.PAGE_BACKUP, BackupCodesPage(self))
+        self.setStartId(self.PAGE_VAULT_NAME)
+
+        try:
+            apply_wda(self)
+        except Exception:
+            pass
+
+
 class SetupWizard(QWizard):
     PAGE_INTRO = 0
     PAGE_IMPORT_SOURCE = 1
@@ -810,6 +842,9 @@ class SetupWizard(QWizard):
         self.setWizardStyle(QWizard.ModernStyle)
         self.setOption(QWizard.NoBackButtonOnStartPage, True)
         self.setButtonText(QWizard.FinishButton, ui.get('PasswordsSetupCreate', 'Create vault'))
+        self.setButtonText(QWizard.NextButton, ui.get('Next', 'Next'))
+        self.setButtonText(QWizard.BackButton, ui.get('Back', 'Back'))
+        self.setButtonText(QWizard.CancelButton, ui.get('Cancel', 'Cancel'))
         self.resize(640, 560)
 
         self.setPage(self.PAGE_INTRO, IntroPage(self))
@@ -845,14 +880,16 @@ class SetupWizard(QWizard):
             apply_yes_no(self.ui, box)
             if box.exec() != QMessageBox.Yes:
                 entries = []
+        access = self.page(self.PAGE_ACCESS)
+        twofa_active = bool(access and getattr(access, 'twofa_radio', None) and access.twofa_radio.isChecked())
         try:
             passwords.create_vault(
                 self.vault_path,
                 self.master_pw,
                 entries=entries,
-                totp_secret=self.totp_secret,
-                totp_enabled=bool(self.totp_secret),
-                backup_codes=self.backup_codes,
+                totp_secret=self.totp_secret if twofa_active else None,
+                totp_enabled=twofa_active,
+                backup_codes=self.backup_codes if twofa_active else None,
             )
             key = passwords.derive_key_from_file(self.vault_path, self.master_pw)
             write_key(key, self.key_file)
@@ -1279,16 +1316,21 @@ class EditorDialog(QDialog):
         layout.addWidget(self.list_widget, 1)
 
         btn_row = QHBoxLayout()
-        btn_regenerate = QPushButton(ui.get('PasswordsRegenerateBackupCodes', 'Regenerate backup codes'))
-        btn_regenerate.clicked.connect(self.on_regenerate_backup_codes)
-        if not (self.data or {}).get('totp_enabled'):
-            btn_regenerate.setVisible(False)
+        self.btn_setup_2fa = QPushButton(ui.get('PasswordsSetup2FAButton', 'Set-Up 2FA'))
+        self.btn_setup_2fa.clicked.connect(self.on_setup_2fa)
+        self.btn_regenerate = QPushButton(ui.get('PasswordsRegenerateBackupCodes', 'Regenerate backup codes'))
+        self.btn_regenerate.clicked.connect(self.on_regenerate_backup_codes)
+        if (self.data or {}).get('totp_enabled'):
+            self.btn_setup_2fa.setVisible(False)
+        else:
+            self.btn_regenerate.setVisible(False)
         btn_edit = QPushButton(ui.get('PasswordsEdit', 'Edit'))
         btn_edit.clicked.connect(self.on_edit)
         btn_delete = QPushButton(ui.get('PasswordsDelete', 'Delete'))
         btn_delete.clicked.connect(self.on_delete)
         btn_row.addStretch()
-        btn_row.addWidget(btn_regenerate)
+        btn_row.addWidget(self.btn_setup_2fa)
+        btn_row.addWidget(self.btn_regenerate)
         btn_row.addWidget(btn_edit)
         btn_row.addWidget(btn_delete)
         layout.addLayout(btn_row)
@@ -1476,6 +1518,26 @@ class EditorDialog(QDialog):
         dlg = BackupCodesDialog(self.ui, self.config_file, codes)
         apply_wda_if_enabled(self.config_file, dlg)
         dlg.exec()
+
+    def on_setup_2fa(self):
+        dlg = Setup2FAWizard(self.ui)
+        apply_wda_if_enabled(self.config_file, dlg)
+        if dlg.exec() != QDialog.Accepted:
+            return
+        if not dlg.totp_secret:
+            return
+        codes = dlg.backup_codes or passwords.generate_backup_codes()
+        try:
+            self.data['totp_enabled'] = True
+            self.data['totp_secret_b64'] = base64.b64encode(dlg.totp_secret.encode()).decode()
+            self.data['backup_codes'] = [passwords.hash_backup_code(c) for c in codes]
+            passwords.save_vault_with_key(self.vault_path, self.key, self.data)
+        except Exception as e:
+            QMessageBox.critical(self, self.ui.get('Error', 'Error'), str(e))
+            return
+        self.refresh_backup_codes()
+        self.btn_setup_2fa.setVisible(False)
+        self.btn_regenerate.setVisible(True)
 
 
 class TOTPVerifyDialog(QDialog):
