@@ -88,3 +88,35 @@ jobs:
             -H "Authorization: Bearer ${{ secrets.UPDSU_PUSH_PASSWORD }}" \
             -H "Content-Type: application/json" \
             --data-binary @payload.json
+
+  winget:
+    name: Push to winget-pkgs
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Resolve tag
+        id: version
+        run: |
+          TAG="${{ github.event.release.tag_name || github.ref_name }}"
+          echo "tag=${TAG#v}" >> "$GITHUB_OUTPUT"
+          echo "raw=${TAG}" >> "$GITHUB_OUTPUT"
+
+      - name: Install komac
+        run: |
+          curl -fsSL https://github.com/russellbanks/Komac/releases/download/v2.16.0/komac-2.16.0-x86_64-unknown-linux-gnu.tar.gz -o komac.tar.gz
+          tar xzf komac.tar.gz
+          sudo mv komac /usr/local/bin/
+          komac --version
+
+      - name: Sync winget-pkgs fork
+        env:
+          GITHUB_TOKEN: ${{ secrets.WINGET_PUSH_TOKEN }}
+        run: komac sync-fork
+
+      - name: Update Eh.clipboard in winget-pkgs
+        env:
+          GITHUB_TOKEN: ${{ secrets.WINGET_PUSH_TOKEN }}
+        run: |
+          URL="https://github.com/${{ github.repository }}/releases/download/${{ steps.version.outputs.raw }}/EhClipboardSetup.exe"
+          komac update Eh.clipboard --urls "$URL" --version "${{ steps.version.outputs.tag }}" --submit
