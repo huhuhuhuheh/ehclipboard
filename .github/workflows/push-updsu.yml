@@ -1,0 +1,90 @@
+name: Push to Update Server
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+
+env:
+  UPDATE_SERVER: ${{ secrets.UPDSU_UPDATE_SERVER }}
+  SOFTWARE_ID: EhClipboard
+  EXE_ASSET: EhClipboardSetup.exe
+  OS_KEY: windows_x64
+
+jobs:
+  push:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Resolve tag
+        id: version
+        run: |
+          TAG="${{ github.event.release.tag_name || github.ref_name }}"
+          echo "tag=${TAG#v}" >> "$GITHUB_OUTPUT"
+          echo "raw=${TAG}" >> "$GITHUB_OUTPUT"
+
+      - name: Fetch release details
+        id: release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release view "$RAW" --repo "${{ github.repository }}" --json tagName,body,assets -q '
+            {
+              tag: .tagName,
+              body: .body,
+              exe: [.assets[] | select(.name == env.EXE_ASSET)] | first // null
+            }
+          ' > release.json
+          cat release.json
+          echo "url=$(gh release view "$RAW" --repo "${{ github.repository }}" --json assets -q "[.assets[] | select(.name == \"$EXE_ASSET\")][0].url")" >> "$GITHUB_OUTPUT"
+        env:
+          RAW: ${{ steps.version.outputs.raw }}
+
+      - name: Download exe asset
+        id: asset
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release download "$RAW" --repo "${{ github.repository }}" --pattern "$EXE_ASSET" --clobber
+          echo "sha256=$(sha256sum "$EXE_ASSET" | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
+        env:
+          RAW: ${{ steps.version.outputs.raw }}
+
+      - name: Build payload
+        id: payload
+        run: |
+          python - <<'EOF'
+          import json, os
+          rel = json.load(open('release.json'))
+          exe = rel.get('exe')
+          if not exe:
+              print('missing', os.environ['EXE_ASSET'], 'asset, aborting')
+              raise SystemExit(1)
+          payload = {
+              "id": os.environ['SOFTWARE_ID'],
+              "version": os.environ['TAG'],
+              "release_notes": rel.get('body') or '',
+              "files": {
+                  os.environ['OS_KEY']: {
+                      "url": exe.get('browser_download_url'),
+                      "hash": os.environ['SHA256'],
+                  }
+              },
+          }
+          open('payload.json', 'w').write(json.dumps(payload))
+          print(json.dumps(payload, indent=2))
+          EOF
+        env:
+          TAG: ${{ steps.version.outputs.tag }}
+          SHA256: ${{ steps.asset.outputs.sha256 }}
+
+      - name: Push to update server
+        run: |
+          curl -fsS -X POST "$UPDATE_SERVER" \
+            -H "Authorization: Bearer ${{ secrets.UPDSU_PUSH_PASSWORD }}" \
+            -H "Content-Type: application/json" \
+            --data-binary @payload.json
