@@ -31,6 +31,7 @@ jobs:
         id: release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RAW: ${{ steps.version.outputs.raw }}
         run: |
           gh release view "$RAW" --repo "${{ github.repository }}" --json tagName,body,assets -q '
             {
@@ -41,18 +42,15 @@ jobs:
           ' > release.json
           cat release.json
           echo "url=$(gh release view "$RAW" --repo "${{ github.repository }}" --json assets -q "[.assets[] | select(.name == \"$EXE_ASSET\")][0].url")" >> "$GITHUB_OUTPUT"
-        env:
-          RAW: ${{ steps.version.outputs.raw }}
 
       - name: Download exe asset
         id: asset
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RAW: ${{ steps.version.outputs.raw }}
         run: |
           gh release download "$RAW" --repo "${{ github.repository }}" --pattern "$EXE_ASSET" --clobber
           echo "sha256=$(sha256sum "$EXE_ASSET" | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
-        env:
-          RAW: ${{ steps.version.outputs.raw }}
 
       - name: Build payload
         id: payload
