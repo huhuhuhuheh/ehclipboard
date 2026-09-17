@@ -113,8 +113,32 @@ jobs:
         run: komac sync-fork
 
       - name: Update Eh.clipboard in winget-pkgs
+        id: komac
         env:
           GITHUB_TOKEN: ${{ secrets.WINGET_PUSH_TOKEN }}
         run: |
           URL="https://github.com/${{ github.repository }}/releases/download/${{ steps.version.outputs.raw }}/EhClipboardSetup.exe"
-          komac update Eh.clipboard --urls "$URL" --version "${{ steps.version.outputs.tag }}" --submit
+          set +e
+          komac update Eh.clipboard --urls "$URL" --version "${{ steps.version.outputs.tag }}" --submit > komac.log 2>&1
+          KOMAC_RC=$?
+          set -e
+          cat komac.log
+          PR=$(grep -oE 'https://github.com/microsoft/winget-pkgs/pull/[0-9]+' komac.log | tail -1 | grep -oE '[0-9]+$' || true)
+          if [ -z "$PR" ]; then
+            echo "could not find PR url in komac output" >&2
+            exit $KOMAC_RC
+          fi
+          echo "pr=$PR" >> "$GITHUB_OUTPUT"
+
+      - name: Add credit to winget PR
+        env:
+          GITHUB_TOKEN: ${{ secrets.WINGET_PUSH_TOKEN }}
+        run: |
+          PR="${{ steps.komac.outputs.pr }}"
+          WORKFLOW_URL="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          RELEASE_URL="${{ github.event.release.html_url || format('https://github.com/{0}/releases/tag/{1}', github.repository, steps.version.outputs.raw) }}"
+          gh api "repos/microsoft/winget-pkgs/pulls/$PR" --jq .body > pr_body.md
+          printf '\n\nThis has been automated with this [workflow](%s) via the [new release](%s).' \
+            "$WORKFLOW_URL" "$RELEASE_URL" >> pr_body.md
+          jq -sR '{body: .}' pr_body.md > pr_body.json
+          gh api "repos/microsoft/winget-pkgs/pulls/$PR" -X PATCH --input pr_body.json
