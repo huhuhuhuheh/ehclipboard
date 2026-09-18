@@ -22,8 +22,14 @@ jobs:
 
       - name: Resolve tag
         id: version
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          TAG="${{ github.event.release.tag_name || github.ref_name }}"
+          if [ -n "${{ github.event.release.tag_name }}" ]; then
+            TAG="${{ github.event.release.tag_name }}"
+          else
+            TAG="$(gh release view --repo "${{ github.repository }}" --json tagName -q .tagName)"
+          fi
           echo "tag=${TAG#v}" >> "$GITHUB_OUTPUT"
           echo "raw=${TAG}" >> "$GITHUB_OUTPUT"
 
@@ -98,8 +104,14 @@ jobs:
     steps:
       - name: Resolve tag
         id: version
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          TAG="${{ github.event.release.tag_name || github.ref_name }}"
+          if [ -n "${{ github.event.release.tag_name }}" ]; then
+            TAG="${{ github.event.release.tag_name }}"
+          else
+            TAG="$(gh release view --repo "${{ github.repository }}" --json tagName -q .tagName)"
+          fi
           echo "tag=${TAG#v}" >> "$GITHUB_OUTPUT"
           echo "raw=${TAG}" >> "$GITHUB_OUTPUT"
 
