@@ -65,7 +65,7 @@ jobs:
           payload = {
               "id": os.environ['SOFTWARE_ID'],
               "version": os.environ['TAG'],
-              "release_notes": rel.get('body') or '',
+              "release_notes": rel.get('body').strip() if rel.get('body') else f"Release {os.environ['TAG']}",
               "files": {
                   os.environ['OS_KEY']: {
                       "url": exe.get('browser_download_url'),
@@ -110,7 +110,11 @@ jobs:
       - name: Sync winget-pkgs fork
         env:
           GITHUB_TOKEN: ${{ secrets.WINGET_PUSH_TOKEN }}
-        run: komac sync-fork
+          FORK_OWNER: nothuheh
+        run: |
+          git clone --depth 1 --branch master https://github.com/microsoft/winget-pkgs.git winget-pkgs
+          cd winget-pkgs
+          git push --force "https://x-access-token:${GITHUB_TOKEN}@github.com/${FORK_OWNER}/winget-pkgs.git" HEAD:master
 
       - name: Update Eh.clipboard in winget-pkgs
         id: komac
