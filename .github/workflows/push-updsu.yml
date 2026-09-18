@@ -54,6 +54,9 @@ jobs:
 
       - name: Build payload
         id: payload
+        env:
+          REPO: ${{ github.repository }}
+          RAW: ${{ steps.version.outputs.raw }}
         run: |
           python - <<'EOF'
           import json, os
@@ -62,13 +65,14 @@ jobs:
           if not exe:
               print('missing', os.environ['EXE_ASSET'], 'asset, aborting')
               raise SystemExit(1)
+          url = f"https://github.com/{os.environ['REPO']}/releases/download/{os.environ['RAW']}/{os.environ['EXE_ASSET']}"
           payload = {
               "id": os.environ['SOFTWARE_ID'],
               "version": os.environ['TAG'],
               "release_notes": rel.get('body').strip() if rel.get('body') else f"Release {os.environ['TAG']}",
               "files": {
                   os.environ['OS_KEY']: {
-                      "url": exe.get('browser_download_url'),
+                      "url": url,
                       "hash": os.environ['SHA256'],
                   }
               },
